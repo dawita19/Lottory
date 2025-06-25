@@ -1,1 +1,14 @@
-
+# render.yaml - Must include:
+services:
+  - type: web
+    name: lottery-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: BOT_TOKEN
+        value: 7355412379:AAGwYmpX8xpZm6eGHDykvByA_cYDQFOAJF4 
+      - key: ADMIN_IDS
+        value: "5795267718"
+      - key: CHANNEL_ID
+        value: "@yotorfetanlottory"
