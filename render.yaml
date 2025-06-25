@@ -1,3 +1,6 @@
+git add render.yaml
+git commit -m "Add render.yaml"
+git push
 services:
   - type: web
     name: lottery-bot-prod
