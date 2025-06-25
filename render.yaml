@@ -23,3 +23,6 @@ services:
       name: lottery_data
       mountPath: /data
       sizeGB: 1
+git add render.yaml
+git commit -m "Add render.yaml"
+git push
