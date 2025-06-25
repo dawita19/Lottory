@@ -1,25 +1,22 @@
-git add render.yaml
-git commit -m "Add render.yaml"
-git push
+version: "1"
 services:
   - type: web
     name: lottery-bot-prod
-    env: python
+    runtime: python
     region: singapore
     plan: free
+    repo: https://github.com/dawita19/Lottory
+    autoDeploy: true
     buildCommand: |
       pip install -r requirements.txt
       python -c "from main import init_db; init_db()"
     startCommand: gunicorn --bind :$PORT --workers 1 --threads 2 --timeout 0 main:bot.run
     envVars:
       - key: BOT_TOKEN
-        value: 7355412379:AAGwYmpX8xpZm6eGHDykvByA_cYDQFOAJF4
-        sync: false  # Critical security setting
+        sync: false
       - key: ADMIN_IDS
-        value: "5795267718"
         sync: false
       - key: CHANNEL_ID
-        value: "@yotorfetanlottory"
         sync: false
     healthCheckPath: /health
     disk:
