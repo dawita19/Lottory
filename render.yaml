@@ -8,6 +8,7 @@ services:
     repo: https://github.com/dawita19/Lottory
     autoDeploy: true
     buildCommand: |
+      pip install --upgrade pip
       pip install -r requirements.txt
       python -c "from main import init_db; init_db()"
     startCommand: gunicorn --bind :$PORT --workers 1 --threads 2 --timeout 0 main:bot.run
