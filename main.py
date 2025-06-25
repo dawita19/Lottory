@@ -261,7 +261,7 @@ class LotteryBot:
         update.message.reply_text(
             f"✅ <b>Number #{number} Reserved</b>\n\n"
             f"Send payment of {tier} Birr to:\n"
-            "<code>CBE: 1000XXXXXX</code>\n\n"
+            "<code>CBE: 1000295626473</code>\n\n"
             "Then upload receipt photo",
             parse_mode='HTML'
         )
