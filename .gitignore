@@ -1,5 +1,34 @@
-git rm --cached render.yaml && \
-echo "render.yaml" >> .gitignore && \
-git add .gitignore && \
-git commit -m "Stop tracking and ignore render.yaml for security" && \
-git push
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+env/
+venv/
+
+# Render deploy config
+render.yaml
+
+# Environment config
+.env
+
+# Logs and DB files
+*.log
+*.db
+*.sqlite3
+
+# Packaging
+*.egg
+*.egg-info/
+dist/
+build/
+
+# VSCode and system files
+.vscode/
+.DS_Store
+
+# Pytest and coverage
+.pytest_cache/
+.coverage
+htmlcov/
