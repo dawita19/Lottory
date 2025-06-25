@@ -1,4 +1,5 @@
-echo "render.yaml" >> .gitignore
-git add .gitignore
-git commit -m "Add security ignore file"
+git rm --cached render.yaml && \
+echo "render.yaml" >> .gitignore && \
+git add .gitignore && \
+git commit -m "Stop tracking and ignore render.yaml for security" && \
 git push
