@@ -1,28 +1,23 @@
-# Lottery Bot Deployment
+# 🎰 Telegram Lottery Bot
 
-## Requirements
+Automated ticket sales with tier-based lottery draws (100/200/300 Birr)
+
+## 🌟 Key Features
+- **Automatic Draws** - Triggers when tickets sell out per tier
+- **Real-Time Tracking** - `/progress` shows current sales
+- **Winner Management** - Automatic announcements
+- **Admin Dashboard** - Full control over draws
+
+## 🛠️ Prerequisites
 - Python 3.8+
-- Render account
-- Telegram bot token
+- [Render](https://render.com) account
+- Telegram bot token from [@BotFather](https://t.me/BotFather)
 
-## Setup
-1. Clone repository
-2. Create `.env` file from `.env.example`
-3. Set environment variables:
-   ```bash
-   echo "BOT_TOKEN=your_token" > .env
-   echo "ADMIN_IDS=123456789" >> .env
-   ```
+## 🚀 Quick Deployment
 
-## Deployment
-1. Connect GitHub repo to Render
-2. Set environment variables in Render dashboard
-3. Deploy!
-
-## Commands
-| Command | Description |
-|---------|-------------|
-| `/buy` | Start ticket purchase |
-| `/progress` | Check ticket sales |
-| `/winners` | View past winners |
-| `/draw` (admin) | Manual draw |
+### 1. Local Setup
+```bash
+git clone https://github.com/yourrepo/lottery-bot.git
+cd lottery-bot
+cp .env.example .env  # Update with your credentials
+python -c "from main import init_db; init_db()"
