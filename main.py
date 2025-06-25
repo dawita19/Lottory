@@ -22,6 +22,7 @@ ADMIN_IDS = [int(id) for id in os.getenv("ADMIN_IDS", "").split(",") if id]
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 DB_FILE = "/data/lottery_bot.db"
 BACKUP_DIR = "/data/backups"
+MAINTENANCE = False  # Maintenance mode flag
 
 # Conversation states
 SELECT_TIER, SELECT_NUMBER, PAYMENT_PROOF = range(3)
@@ -177,12 +178,20 @@ class LotteryBot:
         self.user_activity[user_id] = now
         return False
 
+    def _check_maintenance(self, update: Update, context: CallbackContext):
+        """Check if bot is in maintenance mode"""
+        if MAINTENANCE and update.effective_user.id not in ADMIN_IDS:
+            update.message.reply_text("🔧 The bot is currently under maintenance. Please try again later.")
+            return True
+        return False
+
     def _setup_handlers(self):
         """Configure all bot command handlers"""
         dp = self.updater.dispatcher
         
-        # Anti-spam
+        # Anti-spam and maintenance checks
         dp.add_handler(TypeHandler(Update, self._check_spam), group=-1)
+        dp.add_handler(TypeHandler(Update, self._check_maintenance), group=-1)
         
         # Purchase flow
         conv_handler = ConversationHandler(
@@ -205,11 +214,34 @@ class LotteryBot:
         dp.add_handler(CommandHandler("announce_200", lambda u,c: self._announce_winners(u,c,200)))
         dp.add_handler(CommandHandler("announce_300", lambda u,c: self._announce_winners(u,c,300)))
         
+        # Maintenance mode commands (admin only)
+        dp.add_handler(CommandHandler("maintenance_on", self._enable_maintenance))
+        dp.add_handler(CommandHandler("maintenance_off", self._disable_maintenance))
+        
         # User commands
         dp.add_handler(CommandHandler("numbers", self._available_numbers))
         dp.add_handler(CommandHandler("mytickets", self._show_user_tickets))
         dp.add_handler(CommandHandler("progress", self._show_progress))
         dp.add_handler(CommandHandler("winners", self._show_past_winners))
+
+    # ============= MAINTENANCE MODE HANDLERS =============
+    def _enable_maintenance(self, update: Update, context: CallbackContext):
+        """Enable maintenance mode (admin only)"""
+        if update.effective_user.id not in ADMIN_IDS:
+            return
+            
+        global MAINTENANCE
+        MAINTENANCE = True
+        update.message.reply_text("🛠 Maintenance mode ENABLED")
+
+    def _disable_maintenance(self, update: Update, context: CallbackContext):
+        """Disable maintenance mode (admin only)"""
+        if update.effective_user.id not in ADMIN_IDS:
+            return
+            
+        global MAINTENANCE
+        MAINTENANCE = False
+        update.message.reply_text("✅ Maintenance mode DISABLED")
 
     # ============= PURCHASE FLOW =============
     def _start_purchase(self, update: Update, context: CallbackContext):
@@ -616,8 +648,10 @@ class LotteryBot:
     def run(self):
         """Start the application"""
         app = Flask(__name__)
+        
         @app.route('/health')
-        def health(): return "OK", 200
+        def health():
+            return "MAINTENANCE" if MAINTENANCE else "OK", (503 if MAINTENANCE else 200)
         
         Thread(target=app.run, kwargs={'host':'0.0.0.0','port':5000}).start()
         logging.info("Starting lottery bot...")
