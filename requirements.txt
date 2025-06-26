@@ -1,6 +1,6 @@
 python-telegram-bot==13.7  # Stable API version
 python-dotenv==0.19.0      # Environment management
-Flask==2.2.3               # Health check endpoint
+Flask==2.3.x              # Health check endpoint
 APScheduler==3.6.3         # Background tasks
 gunicorn==20.1.0           # Production WSGI server
 pytz==2023.3               # Timezone handling
