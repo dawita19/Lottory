@@ -197,9 +197,9 @@ class LotteryBot:
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler('buy', self._start_purchase)],
             states={
-                SELECT_TIER: [MessageHandler(Filters.regex('^(100|200|300)$'), self._select_tier)],
-                SELECT_NUMBER: [MessageHandler(Filters.regex('^[1-9][0-9]?$|^100$'), self._select_number)],
-                PAYMENT_PROOF: [MessageHandler(Filters.photo, self._receive_payment_proof)]
+                SELECT_TIER: [MessageHandler(filters.Regex('^(100|200|300)$'), self._select_tier)],
+                SELECT_NUMBER: [MessageHandler(filters.Regex('^[1-9][0-9]?$|^100$'), self._select_number)],
+                PAYMENT_PROOF: [MessageHandler(filters.PHOTO,self._receive_payment_proof)]
             },
             fallbacks=[CommandHandler('cancel', self._cancel_purchase)]
         )
