@@ -10,7 +10,7 @@ from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Updater, CommandHandler, CallbackContext,
-    MessageHandler, Filters, ConversationHandler, TypeHandler
+    MessageHandler, filters, ConversationHandler, TypeHandler
 )
 
 # ====================== CONFIGURATION ======================
