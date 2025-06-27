@@ -361,17 +361,28 @@ class LotteryBot:
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_unknown_message))
         self.application.add_handler(MessageHandler(filters.COMMAND, self._handle_unknown_command))
 
+    # This method is now a synchronous wrapper that launches an async task in a new thread
     def start_polling_in_background(self):
-        """
-        Starts the Telegram bot polling in a non-blocking way.
-        The `run_polling` method of python-telegram-bot handles the asyncio event loop internally
-        when run in a separate thread.
-        """
         logging.info("Starting Telegram Bot polling in a background thread...")
-        try:
-            self.application.run_polling(allowed_updates=Update.ALL_TYPES)
-        except Exception as e:
-            logging.critical(f"Telegram bot polling failed: {e}", exc_info=True)
+
+        # Inner helper function to run async code in a new thread
+        def run_async_loop(application_instance):
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                # This is the crucial part: run the async run_polling method
+                loop.run_until_complete(application_instance.run_polling(allowed_updates=Update.ALL_TYPES))
+            except Exception as e:
+                logging.critical(f"Telegram bot polling in new thread failed: {e}", exc_info=True)
+            finally:
+                loop.close()
+                logging.info("Telegram bot polling loop in background thread closed.")
+
+        # Create and start the thread
+        bot_thread = Thread(target=run_async_loop, args=(self.application,))
+        bot_thread.daemon = True  # Allows the main program to exit even if this thread is still running
+        bot_thread.start()
+        logging.info("Telegram Bot polling thread initiated and started.")
 
 
     # ============= ADMIN COMMANDS =============
@@ -1373,12 +1384,10 @@ def initialize_application_components():
     # Initialize and start the Telegram bot in a background thread
     try:
         lottery_bot_instance = LotteryBot()
-        bot_thread = Thread(target=lottery_bot_instance.start_polling_in_background)
-        bot_thread.daemon = True # Daemon threads exit when the main program exits
-        bot_thread.start()
-        logging.info("Telegram Bot polling thread initiated.")
+        # Call the synchronous method which will create and manage its own async loop in a new thread
+        lottery_bot_instance.start_polling_in_background() 
     except Exception as e:
-        logging.critical(f"Failed to start Telegram Bot: {e}", exc_info=True)
+        logging.critical(f"Failed to initialize and start Telegram Bot: {e}", exc_info=True)
         raise
 
     _initialization_done = True
@@ -1388,6 +1397,5 @@ def initialize_application_components():
 # Call initialization function directly so it runs when Gunicorn imports main.py
 initialize_application_components()
 
-# The Flask application instance is now named 'run' to match the Gunicorn command `main:run`
+# The Flask application instance is named 'run' to match the Gunicorn command `main:run`
 # Gunicorn will look for this 'run' callable to serve the web application.
-# `application = app` was changed to `run = Flask(__name__)` higher up in the code.
