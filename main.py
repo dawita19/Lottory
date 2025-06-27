@@ -889,3 +889,19 @@ if __name__ == '__main__':
         
         # Run bot in main thread
         run_bot()
+
+# --- Main Application Start Point for Gunicorn ---
+def run(environ, start_response): # This function takes the standard WSGI arguments
+    """
+    Initializes the database, starts the Telegram bot in a background thread,
+    and returns the Flask application for Gunicorn to serve.
+    """
+    try:
+        init_db()
+        bot_thread = Thread(target=run_bot)
+        bot_thread.daemon = True
+        bot_thread.start()
+    except Exception as e:
+        logging.critical(f"Failed to initialize services: {e}")
+    
+    return app(environ, start_response)
