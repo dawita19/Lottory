@@ -22,7 +22,7 @@ from telegram.error import TelegramError # Import for specific Telegram API erro
 # Import pytz for timezone-aware datetimes
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler # Import here for clarity
-# Removed 'text' from sqlalchemy import as it's for SQLAlchemy 2.0+
+# Removed 'text' from sqlalchemy import as it's for SQLAlchemy 1.x (as per your requirements.txt)
 from sqlalchemy import create_engine, Column, Integer, BigInteger, String, ForeignKey, DateTime, Boolean, Float
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
@@ -52,9 +52,9 @@ if CHANNEL_ID_STR:
 BACKUP_DIR = os.getenv("BACKUP_DIR", "./backups")
 MAINTENANCE = os.getenv("MAINTENANCE_MODE", "false").lower() == "true"
 
-# --- ACTION REQUIRED: CHANGE THIS TO YOUR ACTUAL ADMIN CONTACT HANDLE ---
+# --- ADMIN CONTACT HANDLE ---
 # This handle will be displayed to users in winner announcements for claiming prizes.
-ADMIN_CONTACT_HANDLE = "@lij_hailemichael" # e.g., "@MyLotteryAdmin" or "@MyLotterySupportGroup"
+ADMIN_CONTACT_HANDLE = "@lij_hailemichael" 
 
 # Conversation states
 SELECT_TIER, SELECT_NUMBER, PAYMENT_PROOF = range(3)
@@ -231,7 +231,7 @@ def health_check():
     try:
         # For SQLAlchemy 1.x, use connection.execute() directly for raw SQL
         with engine.connect() as connection:
-            connection.execute("SELECT 1") # Removed text() wrapper for SQLAlchemy 1.x compatibility
+            connection.execute("SELECT 1") # Corrected for SQLAlchemy 1.x compatibility
         
         status = "MAINTENANCE" if MAINTENANCE else "OK"
         status_code = 503 if MAINTENANCE else 200
@@ -1152,13 +1152,13 @@ class LotteryBot:
                 if not tiers:
                     message += "No active lottery tiers found at the moment."
                 else:
-                    for tier_setting in tiers:
-                        remaining = tier_setting.total_tickets - tier_setting.sold_tickets
+                    for settings in tiers:
+                        remaining = settings.total_tickets - settings.sold_tickets
                         message += (
-                            f"<b>Tier {tier_setting.tier} Birr:</b>\n"
-                            f"• Sold: {tier_setting.sold_tickets} / {tier_setting.total_tickets}\n"
+                            f"<b>Tier {settings.tier} Birr:</b>\n"
+                            f"• Sold: {settings.sold_tickets} / {settings.total_tickets}\n"
                             f"• Remaining: {remaining}\n"
-                            f"• Current Prize Pool: {tier_setting.prize_pool:.2f} Birr\n\n"
+                            f"• Current Prize Pool: {settings.prize_pool:.2f} Birr\n\n"
                         )
                 
                 await update.message.reply_text(message, parse_mode='HTML')
