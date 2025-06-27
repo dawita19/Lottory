@@ -1,28 +1,31 @@
-version: "1"
 services:
   - type: web
-    name: lottery-bot-prod
-    runtime: python
-    region: singapore
-    plan: free
-    repo: https://github.com/dawita19/Lottory
-    autoDeploy: true
-    buildCommand: |
-      pip install --upgrade pip
-      pip install -r requirements.txt
-      python -c "from main import init_db; init_db()"
+    name: lottery-bot-web
+    env: python
+    buildCommand: pip install -r requirements.txt
     startCommand: gunicorn --bind :$PORT --workers 1 --threads 2 --timeout 0 main:app
-    envVars:
-      - key: BOT_TOKEN
-        sync: false
-      - key: ADMIN_IDS
-        sync: false
-      - key: CHANNEL_ID
-        sync: false
-      - key: DATABASE_URL
-        value: sqlite:////data/lottery_bot.db
     healthCheckPath: /health
-    disk:
-      name: lottery_data
-      mountPath: /data
-      sizeGB: 1
+    envVars:
+      - key: DATABASE_URL
+        fromGroup: lottery-bot-secrets
+      - key: TELEGRAM_BOT_TOKEN
+        fromGroup: lottery-bot-secrets
+      - key: ADMIN_IDS
+        fromGroup: lottery-bot-secrets
+      - key: CHANNEL_ID
+        fromGroup: lottery-bot-secrets
+
+  - type: worker
+    name: lottery-bot-worker
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py --worker
+    envVars:
+      - key: DATABASE_URL
+        fromGroup: lottery-bot-secrets
+      - key: TELEGRAM_BOT_TOKEN
+        fromGroup: lottery-bot-secrets
+      - key: ADMIN_IDS
+        fromGroup: lottery-bot-secrets
+      - key: CHANNEL_ID
+        fromGroup: lottery-bot-secrets
