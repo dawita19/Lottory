@@ -224,15 +224,16 @@ def clean_expired_reservations():
     except Exception as e:
         logging.error(f"Unexpected error during expired reservation cleanup: {e}")
 
-# --- Flask Health Check ---
-app = Flask(__name__)
+# --- Flask Web Application ---
+# Renamed 'app' to 'run' to match the Gunicorn command `main:run`
+run = Flask(__name__)
 
-@app.route('/')
+@run.route('/')
 def home():
     """A simple home page for the Flask application."""
     return "Lottery Bot Service is running. Use the Telegram bot to interact!"
 
-@app.route('/health')
+@run.route('/health')
 def health_check():
     """
     Health check endpoint for the Flask application.
@@ -341,12 +342,12 @@ class LotteryBot:
             states={
                 SELECT_TIER: [
                     MessageHandler(filters.Regex(r'^(100|200|300)$'), self._select_tier),
-                    # Corrected: Use CallbackQueryHandler for callback data
+                    # Corrected: Use CallbackQueryHandler directly for inline keyboard button presses
                     CallbackQueryHandler(pattern=r'^tier_(100|200|300)$', callback=self._select_tier_callback)
                 ],
                 SELECT_NUMBER: [
                     MessageHandler(filters.Regex(r'^([1-9][0-9]?|100)$'), self._select_number),
-                    # Corrected: Use CallbackQueryHandler for callback data
+                    # Corrected: Use CallbackQueryHandler directly for inline keyboard button presses
                     CallbackQueryHandler(pattern=r'^num_([1-9][0-9]?|100)$', callback=self._select_number_callback),
                     CallbackQueryHandler(pattern=r'^show_all_numbers_([1-9][0-9]?|100)$', callback=self._select_number_callback)
                 ],
@@ -1387,7 +1388,6 @@ def initialize_application_components():
 # Call initialization function directly so it runs when Gunicorn imports main.py
 initialize_application_components()
 
-# Define the Flask application entry point for Gunicorn
-# Gunicorn will look for a 'application' or 'app' callable in main.py by default.
-# We explicitly expose 'app' here.
-application = app # Expose the Flask app instance for Gunicorn
+# The Flask application instance is now named 'run' to match the Gunicorn command `main:run`
+# Gunicorn will look for this 'run' callable to serve the web application.
+# `application = app` was changed to `run = Flask(__name__)` higher up in the code.
