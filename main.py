@@ -1052,7 +1052,7 @@ class LotteryBot:
             
         try:
             if not context.args or not context.args[0].isdigit():
-                await update.message.reply_text("Usage: /draw <TIER> (e.g., /draw 100). Valid tiers: 100, 200, 300.")
+                await update.message.reply_text("Usage: /draw <TIER> (e.e.g., /draw 100). Valid tiers: 100, 200, 300.")
                 return
 
             tier = int(context.args[0])
@@ -1180,7 +1180,7 @@ class LotteryBot:
                     await update.message.reply_text("No past winners yet. Be the first to win!")
                     return
                     
-                message = "🏆 <b>Past Winners (Last 5)</b> ?\n\n"
+                message = "🏆 <b>Past Winners (Last 5)</b> 🏆\n\n"
                 for winner_entry, draw in winners:
                     user = session.query(User).get(winner_entry.user_id)
                     username = f"@{user.username}" if user and user.username else f"User ID: {winner_entry.user_id}"
@@ -1321,7 +1321,7 @@ def run(environ, start_response):
         raise # Re-raise to ensure Render service restarts if DB is critical for startup
     
     global telegram_bot_instance # Declare intent to modify global variable
-    if telegram_bot_instance === None: # Ensure bot is only initialized once per Gunicorn worker
+    if telegram_bot_instance is None: # Corrected: use 'is None' for identity check in Python
         try:
             # Start APScheduler in its own thread. This does NOT need an asyncio loop.
             scheduler_thread = Thread(target=LotteryBot.init_schedulers_standalone, daemon=True)
@@ -1409,4 +1409,3 @@ if __name__ == '__main__':
         logging.critical(f"Local bot initialization failed due to configuration error: {e}.")
     except Exception as e:
         logging.critical(f"Unexpected error during local bot setup: {e}.")
-?
