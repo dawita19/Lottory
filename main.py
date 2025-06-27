@@ -272,7 +272,8 @@ class LotteryBot:
     def init_schedulers_standalone():
         """Initializes and starts APScheduler background tasks."""
         try:
-            scheduler = BackgroundScheduler()
+            # Initialize BackgroundScheduler with pytz.utc timezone explicitly
+            scheduler = BackgroundScheduler(timezone=pytz.utc) 
             scheduler.add_job(backup_db, 'interval', hours=6, id='db_backup_job')
             scheduler.add_job(clean_expired_reservations, 'interval', hours=1, id='clean_reservations_job')
             scheduler.start()
@@ -825,7 +826,7 @@ class LotteryBot:
                                 parse_mode='HTML'
                             )
                         except TelegramError as e:
-                            logging.error(f"Failed to notify user {user.telegram_id} after approval: {e}")
+                            loging.error(f"Failed to notify user {user.telegram_id} after approval: {e}")
                     else:
                         logging.error(f"User {ticket.user_id} not found to notify after approval.")
                     
@@ -1386,8 +1387,7 @@ if __name__ == '__main__':
             asyncio.set_event_loop(local_bot_loop)
 
             # Instantiate the LotteryBot *within* this thread, after the event loop is set.
-            # This is the crucial part for resolving the event loop issue.
-            local_bot_instance_inner = LotteryBot() # This is a new local variable, not global or nonlocal from parent
+            local_bot_instance_inner = LotteryBot() 
             
             await local_bot_instance_inner.run_polling_bot()
         
