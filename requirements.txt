@@ -4,3 +4,4 @@ Flask>=2.3.0               # Health check endpoint
 APScheduler==3.6.3         # Background tasks
 gunicorn==20.1.0           # Production WSGI server
 pytz==2023.3               # Timezone handling
+SQLAlchemy==1.4.39
