@@ -115,7 +115,6 @@ def init_db():
         logging.critical(f"Database initialization error: {e}")
         raise
 
-# --- Backup System ---
 def backup_db():
     """Create timestamped database backup"""
     try:
@@ -186,15 +185,6 @@ class LotteryBot:
             raise ValueError("TELEGRAM_BOT_TOKEN environment variable required")
         if not ADMIN_IDS:
             logging.warning("No ADMIN_IDS configured - admin commands disabled")
-
-    def init_schedulers(self):
-        """Initialize scheduled tasks"""
-        from apscheduler.schedulers.background import BackgroundScheduler
-        scheduler = BackgroundScheduler()
-        scheduler.add_job(backup_db, 'interval', hours=6)
-        scheduler.add_job(clean_expired_reservations, 'interval', hours=1)
-        scheduler.start()
-        logging.info("APScheduler background tasks started.")
 
     def _check_spam(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -834,6 +824,15 @@ class LotteryBot:
 # --- Global instance of the bot for internal use ---
 telegram_bot_instance: Optional[LotteryBot] = None
 
+def init_schedulers():
+    """Initialize scheduled tasks in the main thread"""
+    from apscheduler.schedulers.background import BackgroundScheduler
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(backup_db, 'interval', hours=6)
+    scheduler.add_job(clean_expired_reservations, 'interval', hours=1)
+    scheduler.start()
+    logging.info("APScheduler background tasks started.")
+
 # --- Main Application Start Point for Gunicorn ---
 def run(environ, start_response):
     """
@@ -853,11 +852,12 @@ def run(environ, start_response):
         logging.critical(f"Failed to initialize database during startup: {e}")
         pass 
     
+    # Initialize and start the scheduler in the main thread
+    init_schedulers()
+    
     global telegram_bot_instance
     if telegram_bot_instance is None:
         telegram_bot_instance = LotteryBot()
-        
-        telegram_bot_instance.init_schedulers()
 
         def start_bot_async_loop():
             bot_loop = asyncio.new_event_loop()
@@ -887,12 +887,14 @@ if __name__ == '__main__':
         logging.critical(f"Failed to initialize database: {e}")
         exit(1)
         
+    # Initialize and start the scheduler in the main thread
+    init_schedulers()
+    
     flask_thread = Thread(target=lambda: app.run(host='0.0.0.0', port=5000))
     flask_thread.start()
     logging.info("Flask health check running on port 5000 (local dev mode)")
     
     local_bot_instance = LotteryBot()
-    local_bot_instance.init_schedulers()
 
     async def start_local_bot_async():
         await local_bot_instance.run_polling_bot()
