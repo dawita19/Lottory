@@ -20,6 +20,7 @@ from telegram.ext import (
 
 # Import pytz for timezone-aware datetimes
 import pytz
+from apscheduler.schedulers.background import BackgroundScheduler # Import here for clarity
 
 # --- Configuration ---
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./lottery_bot.db")
@@ -118,6 +119,7 @@ def init_db():
         logging.critical(f"Database initialization error: {e}")
         raise
 
+# --- Backup System ---
 def backup_db():
     """Create timestamped database backup"""
     try:
@@ -190,14 +192,17 @@ class LotteryBot:
         if not ADMIN_IDS:
             logging.warning("No ADMIN_IDS configured - admin commands disabled")
 
-    def init_schedulers(self):
+    # This method is now called directly from the main `run` function,
+    # so it no longer needs to be a method of LotteryBot.
+    # It's a standalone function for clarity in this mixed async/threading setup.
+    def init_schedulers_standalone():
         """Initialize scheduled tasks"""
-        from apscheduler.schedulers.background import BackgroundScheduler
         scheduler = BackgroundScheduler()
         scheduler.add_job(backup_db, 'interval', hours=6)
         scheduler.add_job(clean_expired_reservations, 'interval', hours=1)
         scheduler.start()
         logging.info("APScheduler background tasks started.")
+
 
     def _check_spam(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Anti-spam protection with 2-second cooldown"""
@@ -905,9 +910,11 @@ def run(environ, start_response): # This function takes the standard WSGI argume
     if telegram_bot_instance is None: # Ensure bot is only initialized once per Gunicorn worker
         telegram_bot_instance = LotteryBot()
         
-        # Initialize and start APScheduler tasks in the main thread (Gunicorn's thread)
-        # This resolves the event loop issue by separating the scheduler from the bot's async loop.
-        telegram_bot_instance.init_schedulers()
+        # Initialize and start APScheduler tasks in a separate thread
+        # This will create a new thread for the scheduler, which APScheduler handles internally.
+        # It's important that this is done *before* the bot's asyncio loop is run.
+        Thread(target=LotteryBot.init_schedulers_standalone, daemon=True).start()
+        logging.info("APScheduler background thread launched.")
 
         def start_bot_async_loop():
             bot_loop = asyncio.new_event_loop()
@@ -950,8 +957,10 @@ if __name__ == '__main__':
     
     # Local bot instance
     local_bot_instance = LotteryBot()
-    # Initialize and start APScheduler for local dev instance
-    local_bot_instance.init_schedulers()
+    # Initialize and start APScheduler for local dev instance in its own thread
+    Thread(target=LotteryBot.init_schedulers_standalone, daemon=True).start()
+    logging.info("APScheduler background thread launched (local dev mode).")
+
 
     async def start_local_bot_async():
         await local_bot_instance.run_polling_bot()
