@@ -15,7 +15,8 @@ from telegram.ext import (
     ConversationHandler,
     ContextTypes,
     filters,
-    TypeHandler
+    TypeHandler,
+    CallbackQueryHandler # Added CallbackQueryHandler import
 )
 from telegram.error import TelegramError # Import for specific Telegram API error handling
 
@@ -131,7 +132,7 @@ def init_db():
                     os.makedirs(BACKUP_DIR, exist_ok=True)
                 except OSError as e:
                     logging.warning(f"Could not create backup directory {BACKUP_DIR}: {e}. Backups will be skipped.")
-        
+            
         Base.metadata.create_all(engine)
         
         # Initialize ticket tiers if they don't exist
@@ -139,7 +140,7 @@ def init_db():
             for tier_value in [100, 200, 300]:
                 if not session.query(LotterySettings).filter_by(tier=tier_value).first():
                     session.add(LotterySettings(tier=tier_value, total_tickets=100)) # Default to 100 tickets
-            session.commit()
+                session.commit()
             
         logging.info("Database initialized successfully and default tiers ensured.")
     except OperationalError as e:
@@ -331,14 +332,14 @@ class LotteryBot:
             states={
                 SELECT_TIER: [
                     MessageHandler(filters.Regex(r'^(100|200|300)$'), self._select_tier),
-                    # Use filters.CallbackQuery for callback data regex matching
-                    MessageHandler(filters.CallbackQuery(pattern=r'^tier_(100|200|300)$'), self._select_tier_callback)
+                    # Corrected: Use CallbackQueryHandler for callback data
+                    CallbackQueryHandler(pattern=r'^tier_(100|200|300)$', callback=self._select_tier_callback)
                 ],
                 SELECT_NUMBER: [
                     MessageHandler(filters.Regex(r'^([1-9][0-9]?|100)$'), self._select_number),
-                    # Use filters.CallbackQuery for callback data regex matching
-                    MessageHandler(filters.CallbackQuery(pattern=r'^num_([1-9][0-9]?|100)$'), self._select_number_callback),
-                    MessageHandler(filters.CallbackQuery(pattern=r'^show_all_numbers_([1-9][0-9]?|100)$'), self._select_number_callback)
+                    # Corrected: Use CallbackQueryHandler for callback data
+                    CallbackQueryHandler(pattern=r'^num_([1-9][0-9]?|100)$', callback=self._select_number_callback),
+                    CallbackQueryHandler(pattern=r'^show_all_numbers_([1-9][0-9]?|100)$', callback=self._select_number_callback)
                 ],
                 PAYMENT_PROOF: [MessageHandler(filters.PHOTO, self._receive_payment_proof)]
             },
@@ -600,7 +601,7 @@ class LotteryBot:
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(f"🔢 Available Numbers for {tier} Birr:\n\nSelect your preferred number:", reply_markup=reply_markup, parse_mode='HTML')
             return SELECT_NUMBER
-        
+            
         # Attempt to reserve the number
         with Session() as session:
             try:
@@ -655,29 +656,44 @@ class LotteryBot:
 
     async def _select_number(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Handles text input for number selection (fallback if not using inline keyboard)."""
-        # This function might be hit if user types number directly.
-        # It calls the same logic as the callback version.
+        # This function should contain logic similar to _select_number_callback but for text input.
+        # For simplicity, if the user types a number, we can attempt to process it directly.
+        # However, it's generally better to guide users to use inline buttons.
         try:
             number = int(update.message.text)
             if not (1 <= number <= 100):
-                await update.message.reply_text("Please enter a valid number between 1 and 100.")
+                await update.message.reply_text("Invalid number. Please choose a number between 1 and 100.")
                 return SELECT_NUMBER
+
+            tier = context.user_data.get('tier')
+            if not tier:
+                await update.message.reply_text("❌ Missing tier information. Please start the purchase again with /buy.")
+                return ConversationHandler.END
+
+            # Simulate callback query for consistent logic with _select_number_callback
+            class MockQueryMessage: # Mock message object for query.edit_message_text
+                def __init__(self, chat_id, message_id):
+                    self.chat_id = chat_id
+                    self.message_id = message_id
+                async def edit_text(self, text, reply_markup=None, parse_mode=None):
+                    await context.bot.send_message(chat_id=self.chat_id, text=text, reply_markup=reply_markup, parse_mode=parse_mode)
             
-            # Simulate callback query for consistent logic
             class MockQuery:
-                def __init__(self, data, from_user, message): # Added message attribute
+                def __init__(self, data, from_user, chat_id, message_id):
                     self.data = data
                     self.from_user = from_user
-                    self.message = message # Store message object
+                    # Mimic query.message for edit_message_text compatibility
+                    self.message = MockQueryMessage(chat_id, message_id) 
                 async def answer(self): pass
                 async def edit_message_text(self, text, reply_markup=None, parse_mode=None):
-                    await self.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode) # Use message to reply
+                    # For a message handler, we need to reply, not edit an old message.
+                    await update.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
             
-            mock_query = MockQuery(f"num_{number}", update.effective_user, update.message)
+            mock_query = MockQuery(f"num_{number}", update.effective_user, update.effective_chat.id, update.message.message_id)
             return await self._select_number_callback(mock_query, context)
-            
+
         except ValueError:
-            await update.message.reply_text("Please enter a valid number.")
+            await update.message.reply_text("Please enter a valid number (1-100).")
             return SELECT_NUMBER
         except TelegramError as e:
             logging.error(f"Telegram API error in _select_number: {e}")
@@ -686,726 +702,664 @@ class LotteryBot:
 
 
     async def _receive_payment_proof(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Handles the receipt of payment proof (photo)."""
+        """Receives payment proof photo and stores it."""
         user_id = update.effective_user.id
-        photo_id = update.message.photo[-1].file_id # Get the highest resolution photo file_id
-        number = context.user_data.get('number')
-        tier = context.user_data.get('tier')
+        photo = update.message.photo[-1] # Get the largest photo size
+        file_id = photo.file_id
         
-        if not number or not tier:
-            await update.message.reply_text("❌ An error occurred with your reservation details. Please start the purchase process again with /buy.")
-            return ConversationHandler.END
+        tier = context.user_data.get('tier')
+        number = context.user_data.get('number')
 
+        if not tier or not number:
+            await update.message.reply_text("❌ It seems like your ticket selection was not complete. Please start again with /buy.")
+            return ConversationHandler.END
+        
         with Session() as session:
             try:
-                user_db = session.query(User).filter_by(telegram_id=user_id).first()
-                if not user_db:
+                user = session.query(User).filter_by(telegram_id=user_id).first()
+                if not user:
                     await update.message.reply_text("❌ User not found. Please /start again.")
                     return ConversationHandler.END
-
-                # Find the reservation for the current user and the specific number/tier
-                reservation = session.query(ReservedNumber).filter_by(
-                    user_id=user_db.id,
-                    number=number,
-                    tier=tier
+                
+                # Check if there's an existing reservation for this user, tier, and number
+                reserved_entry = session.query(ReservedNumber).filter_by(
+                    user_id=user.id,
+                    tier=tier,
+                    number=number
                 ).first()
-                
-                if not reservation:
-                    await update.message.reply_text("❌ Your reservation expired or was not found. Please start over with /buy.")
-                    return ConversationHandler.END
-                    
-                # Update reservation with photo ID
-                reservation.photo_id = photo_id
+
+                if not reserved_entry:
+                    await update.message.reply_text("❌ Your reservation for this number was not found or expired. Please select a number again.")
+                    return SELECT_NUMBER # Go back to number selection
+
+                # Update the reserved entry with the photo_id
+                reserved_entry.photo_id = file_id
+                session.add(reserved_entry)
                 session.commit()
-                
-                # Notify all configured admins
+
+                await update.message.reply_text(
+                    f"📸 Thank you! Your payment proof for ticket #{number} (Tier {tier} Birr) has been received and will be reviewed by an admin. "
+                    "You will be notified once it's approved. Use /mytickets to see your pending tickets."
+                )
+
+                # Notify admins
+                admin_message = (
+                    f"💰 New payment proof received for User: {update.effective_user.full_name} (@{update.effective_user.username or 'N/A'})\n"
+                    f"Telegram ID: <code>{user_id}</code>\n"
+                    f"Ticket: #{number} (Tier {tier} Birr)\n"
+                    f"To approve: /approve {user_id} {number} {tier}"
+                )
                 for admin_id in ADMIN_IDS:
                     try:
-                        await self.application.bot.send_photo(
-                            chat_id=admin_id,
-                            photo=photo_id,
-                            caption=(f"🔄 Payment Proof Received 🔄\n\n"
-                                       f"<b>User:</b> @{update.effective_user.username or user_id}\n"
-                                       f"<b>Number:</b> #{number}\n"
-                                       f"<b>Tier:</b> {tier} Birr\n\n"
-                                       f"To approve, use: <code>/approve {number} {tier}</code>"),
-                            parse_mode='HTML'
-                        )
+                        await context.bot.send_photo(chat_id=admin_id, photo=file_id, caption=admin_message, parse_mode='HTML')
                     except TelegramError as e:
                         logging.error(f"Failed to send payment proof to admin {admin_id}: {e}")
                 
-                await update.message.reply_text(
-                    "📨 <b>Payment Received!</b>\n\n"
-                    "Your payment proof has been submitted. An admin will verify your payment shortly.\n"
-                    "We appreciate your patience!",
-                    parse_mode='HTML'
-                )
-                return ConversationHandler.END
+                # Clear user data for this conversation
+                context.user_data.pop('tier', None)
+                context.user_data.pop('number', None)
+                return ConversationHandler.END # End the conversation
             except SQLAlchemyError as e:
                 session.rollback()
-                logging.error(f"Database error saving payment proof for user {user_id}: {e}")
+                logging.error(f"Database error storing payment proof for user {user_id}, number {number}, tier {tier}: {e}")
                 await update.message.reply_text("❌ An error occurred while saving your payment proof. Please try again.")
                 return ConversationHandler.END
             except TelegramError as e:
-                logging.error(f"Telegram API error receiving payment proof: {e}")
+                logging.error(f"Telegram API error receiving payment proof for user {user_id}: {e}")
+                await update.message.reply_text("❌ An error occurred while processing your photo. Please try again.")
                 return ConversationHandler.END
 
-    async def _approve_payment(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Admin command to approve a payment and issue a ticket."""
-        if not self._is_admin(update.effective_user.id):
-            await update.message.reply_text("🚫 You are not authorized to use this command.")
-            return
-            
-        try:
-            if len(context.args) < 2:
-                await update.message.reply_text("Usage: /approve NUMBER TIER (e.g., /approve 5 100)")
-                return
-                
-            number = int(context.args[0])
-            tier = int(context.args[1])
-            
+
+    async def _cancel_purchase(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Cancels the current ticket purchase conversation."""
+        user_id = update.effective_user.id
+        tier = context.user_data.get('tier')
+        number = context.user_data.get('number')
+
+        if tier and number:
             with Session() as session:
                 try:
-                    # Find the pending reservation with a photo_id
-                    reservation = session.query(ReservedNumber).filter_by(
-                        number=number,
-                        tier=tier
-                    ).first()
-                    
-                    if not reservation:
-                        await update.message.reply_text(f"❌ No pending reservation found for number #{number} tier {tier}.")
-                        return
-                    
-                    # Double-check: ensure no approved ticket exists for this user/number/tier
-                    existing_ticket = session.query(Ticket).filter_by(
-                        user_id=reservation.user_id,
-                        number=number,
-                        tier=tier,
-                        is_approved=True
-                    ).first()
-
-                    if existing_ticket:
-                        await update.message.reply_text(f"⚠️ Ticket #{number} (Tier {tier}) for user {reservation.user_id} is already approved. Cleaning up reservation.")
-                        session.delete(reservation) # Clean up the stale reservation
-                        session.commit()
-                        return
-
-                    # Create and record the new approved ticket
-                    ticket = Ticket(
-                        user_id=reservation.user_id,
-                        number=number,
-                        tier=tier,
-                        purchased_at=reservation.reserved_at, # Use reservation time for consistency
-                        is_approved=True
-                    )
-                    session.add(ticket)
-                    
-                    # Update prize pool and sold ticket count for the tier
-                    settings = session.query(LotterySettings).filter_by(tier=tier).first()
-                    if settings:
-                        settings.sold_tickets += 1
-                        settings.prize_pool += tier * 0.5
-                    else:
-                        logging.warning(f"LotterySettings for tier {tier} not found. Prize pool not updated.")
-                    
-                    # After approving, check if this tier is now sold out to trigger a draw
-                    if settings and settings.sold_tickets >= settings.total_tickets:
-                        await self._conduct_draw(session, tier)
-                    
-                    # Delete the reservation as it's now approved
-                    session.delete(reservation)
-                    session.commit() # Commit all changes in this block
-
-                    # Notify the user whose ticket was approved
-                    user = session.query(User).get(ticket.user_id)
+                    user = session.query(User).filter_by(telegram_id=user_id).first()
                     if user:
-                        try:
-                            await self.application.bot.send_message(
-                                chat_id=user.telegram_id,
-                                text=f"🎉 <b>Payment Approved!</b>\n\nYour ticket <b>#{number}</b> for {tier} Birr is now confirmed and entered into the draw! Good luck!",
-                                parse_mode='HTML'
-                            )
-                        except TelegramError as e:
-                            logging.error(f"Failed to notify user {user.telegram_id} after approval: {e}")
-                    else:
-                        logging.error(f"User {ticket.user_id} not found to notify after approval.")
-                    
-                    await update.message.reply_text(f"✅ Approved ticket #{number} (Tier {tier}).")
-
+                        # Remove the reservation if it exists
+                        session.query(ReservedNumber).filter_by(
+                            user_id=user.id,
+                            tier=tier,
+                            number=number
+                        ).delete()
+                        session.commit()
+                        logging.info(f"Reservation for user {user_id}, number {number}, tier {tier} cancelled.")
                 except SQLAlchemyError as e:
-                    session.rollback() # Rollback changes if a database error occurs
-                    logging.error(f"Database error during payment approval: {e}")
-                    await update.message.reply_text("❌ A database error occurred during approval. Please check logs.")
-                except Exception as e:
-                    logging.error(f"Unhandled error during payment approval: {e}")
-                    await update.message.reply_text(f"❌ An unexpected error occurred: {e}. Please check logs.")
-
-        except ValueError:
-            await update.message.reply_text("Invalid arguments. Usage: /approve NUMBER TIER")
-        except TelegramError as e:
-            logging.error(f"Telegram API error in _approve_payment: {e}")
+                    session.rollback()
+                    logging.error(f"Database error during reservation cancellation for user {user_id}: {e}")
+        
+        context.user_data.pop('tier', None)
+        context.user_data.pop('number', None)
+        await update.message.reply_text("🚫 Ticket purchase cancelled.")
+        return ConversationHandler.END
 
 
+    # ============= ADMIN APPROVALS =============
     async def _show_pending_approvals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Lists all tickets awaiting payment approval for admins."""
+        """Shows all pending ticket approvals to admins."""
         if not self._is_admin(update.effective_user.id):
             await update.message.reply_text("🚫 You are not authorized to use this command.")
             return
-            
+
         with Session() as session:
             try:
-                # Retrieve reservations that have a photo_id but are not yet approved
-                # (is_approved check is implicitly handled by the reservation not being deleted)
-                pending = session.query(ReservedNumber).filter(
-                    ReservedNumber.photo_id.isnot(None)
-                ).order_by(ReservedNumber.reserved_at).all()
-                
-                if not pending:
-                    await update.message.reply_text("No pending approvals at this time.")
+                pending_reservations = session.query(ReservedNumber).filter(
+                    ReservedNumber.photo_id.isnot(None) # Only show those with a photo
+                ).all()
+
+                if not pending_reservations:
+                    await update.message.reply_text("✅ No pending approvals at the moment.")
                     return
-                    
-                message = "🔄 Pending Approvals:\n\n"
-                for item in pending:
-                    user = session.query(User).get(item.user_id)
-                    username = f"@{user.username}" if user and user.username else f"User ID: {item.user_id}"
-                    
+
+                message = "⏳ <b>Pending Ticket Approvals</b>:\n\n"
+                for res in pending_reservations:
+                    user = session.query(User).filter_by(id=res.user_id).first()
+                    username = user.username if user else "Unknown User"
                     message += (
-                        f"<b>Ticket:</b> #{item.number} ({item.tier} Birr)\n"
-                        f"<b>User:</b> {username}\n"
-                        f"<b>Reserved At:</b> {item.reserved_at.strftime('%Y-%m-%d %H:%M %Z')}\n"
-                        f"<b>Approve:</b> <code>/approve {item.number} {item.tier}</code>\n\n"
+                        f"User: @{username} (<code>{user.telegram_id}</code>)\n"
+                        f"Ticket: #{res.number} (Tier {res.tier} Birr)\n"
+                        f"Reserved At: {res.reserved_at.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                        f"Approve with: /approve {user.telegram_id} {res.number} {res.tier}\n"
+                        f"To view photo: Send the photo with file_id: <code>{res.photo_id}</code> to a chat (or use a tool to view)\n\n"
                     )
                 
-                await update.message.reply_text(message, parse_mode='HTML')
+                # Telegram messages have a length limit, send in chunks if too long
+                if len(message) > 4096:
+                    chunks = [message[i:i+4000] for i in range(0, len(message), 4000)]
+                    for chunk in chunks:
+                        await update.message.reply_text(chunk, parse_mode='HTML')
+                else:
+                    await update.message.reply_text(message, parse_mode='HTML')
+
             except SQLAlchemyError as e:
-                logging.error(f"Database error fetching pending approvals: {e}")
-                await update.message.reply_text("❌ A database error occurred while fetching pending approvals.")
+                logging.error(f"Database error showing pending approvals: {e}")
+                await update.message.reply_text("❌ An error occurred while fetching pending approvals.")
             except TelegramError as e:
                 logging.error(f"Telegram API error showing pending approvals: {e}")
 
-    async def _approve_all_pending(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Admin command to bulk approve all pending payments."""
+
+    async def _approve_payment(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Approves a user's payment and registers their ticket (admin only).
+        Usage: /approve <user_telegram_id> <number> <tier>
+        """
         if not self._is_admin(update.effective_user.id):
             await update.message.reply_text("🚫 You are not authorized to use this command.")
             return
-            
+
+        args = context.args
+        if len(args) != 3:
+            await update.message.reply_text("Usage: /approve <user_telegram_id> <number> <tier>")
+            return
+
+        try:
+            target_user_id = int(args[0])
+            ticket_number = int(args[1])
+            ticket_tier = int(args[2])
+        except ValueError:
+            await update.message.reply_text("Invalid arguments. Please provide numeric values for user ID, number, and tier.")
+            return
+
         with Session() as session:
             try:
-                pending = session.query(ReservedNumber).filter(
+                user = session.query(User).filter_by(telegram_id=target_user_id).first()
+                if not user:
+                    await update.message.reply_text(f"❌ User with Telegram ID {target_user_id} not found.")
+                    return
+
+                # Check if there's a reservation for this user, number, and tier
+                reserved_ticket = session.query(ReservedNumber).filter_by(
+                    user_id=user.id,
+                    number=ticket_number,
+                    tier=ticket_tier
+                ).first()
+
+                if not reserved_ticket or not reserved_ticket.photo_id:
+                    await update.message.reply_text(f"❌ No pending payment proof found for user {target_user_id}, ticket #{ticket_number} (Tier {ticket_tier}).")
+                    return
+
+                # Check if the number is already taken by an approved ticket for this tier
+                if session.query(Ticket).filter_by(number=ticket_number, tier=ticket_tier, is_approved=True).first():
+                    await update.message.reply_text(f"❌ Number #{ticket_number} for Tier {ticket_tier} is already approved and taken.")
+                    # Optionally, delete the incorrect reservation here
+                    session.delete(reserved_ticket)
+                    session.commit()
+                    return
+
+                # Create the approved ticket
+                new_ticket = Ticket(
+                    user_id=user.id,
+                    number=ticket_number,
+                    tier=ticket_tier,
+                    is_approved=True,
+                    purchased_at=reserved_ticket.reserved_at # Use reservation time as purchase time
+                )
+                session.add(new_ticket)
+                
+                # Update LotterySettings (increment sold tickets, add to prize pool)
+                lottery_setting = session.query(LotterySettings).filter_by(tier=ticket_tier).first()
+                if lottery_setting:
+                    lottery_setting.sold_tickets += 1
+                    # Assuming tier value is also the price per ticket
+                    lottery_setting.prize_pool += ticket_tier * 0.8 # Example: 80% goes to prize pool
+                    session.add(lottery_setting)
+                else:
+                    logging.warning(f"LotterySettings for tier {ticket_tier} not found. Skipping prize pool update.")
+
+                # Delete the reservation as it's now approved
+                session.delete(reserved_ticket)
+                session.commit()
+
+                await update.message.reply_text(f"✅ Ticket #{ticket_number} (Tier {ticket_tier} Birr) for user {user.username} (ID: {target_user_id}) has been approved.")
+                
+                # Notify the user their ticket is approved
+                try:
+                    await context.bot.send_message(
+                        chat_id=target_user_id,
+                        text=f"🎉 Your ticket #{ticket_number} (Tier {ticket_tier} Birr) has been approved! Good luck in the draw!"
+                    )
+                except TelegramError as e:
+                    logging.error(f"Failed to notify user {target_user_id} about ticket approval: {e}")
+
+            except SQLAlchemyError as e:
+                session.rollback()
+                logging.error(f"Database error approving ticket for user {target_user_id}, number {ticket_number}, tier {ticket_tier}: {e}")
+                await update.message.reply_text("❌ An error occurred during ticket approval. Please check logs.")
+            except Exception as e:
+                logging.error(f"Unexpected error during ticket approval: {e}")
+                await update.message.reply_text("❌ An unexpected error occurred. Please check logs.")
+
+
+    async def _approve_all_pending(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Approves all pending tickets with valid payment proofs (admin only)."""
+        if not self._is_admin(update.effective_user.id):
+            await update.message.reply_text("🚫 You are not authorized to use this command.")
+            return
+
+        approved_count = 0
+        failed_count = 0
+        messages = []
+
+        with Session() as session:
+            try:
+                pending_reservations = session.query(ReservedNumber).filter(
                     ReservedNumber.photo_id.isnot(None)
                 ).all()
-                
-                count = 0
-                for item in pending:
-                    try:
-                        # Prevent duplicate approvals
-                        existing_ticket = session.query(Ticket).filter_by(
-                            user_id=item.user_id,
-                            number=item.number,
-                            tier=item.tier,
-                            is_approved=True
-                        ).first()
 
-                        if existing_ticket:
-                            logging.info(f"Skipping approval for ticket #{item.number} (Tier {item.tier}) for user {item.user_id} - already approved. Deleting reservation.")
-                            session.delete(item)
-                            continue
-
-                        # Create and add the new ticket
-                        ticket = Ticket(
-                            user_id=item.user_id,
-                            number=item.number,
-                            tier=item.tier,
-                            purchased_at=item.reserved_at,
-                            is_approved=True
-                        )
-                        session.add(ticket)
-                        
-                        # Update lottery settings for the tier
-                        settings = session.query(LotterySettings).filter_by(tier=item.tier).first()
-                        if settings:
-                            settings.sold_tickets += 1
-                            settings.prize_pool += item.tier * 0.5
-                        
-                        # Check for draw trigger
-                        if settings and settings.sold_tickets >= settings.total_tickets:
-                            await self._conduct_draw(session, item.tier)
-                        
-                        # Notify the user
-                        user = session.query(User).get(item.user_id)
-                        if user:
-                            try:
-                                await self.application.bot.send_message(
-                                    chat_id=user.telegram_id,
-                                    text=f"🎉 Payment Approved!\n\nYour ticket #{item.number} for {item.tier} Birr is now confirmed!"
-                                )
-                            except TelegramError as e:
-                                logging.error(f"Failed to notify user {user.telegram_id} during bulk approval: {e}")
-                        
-                        session.delete(item) # Delete reservation after successful processing
-                        count += 1
-                    except SQLAlchemyError as inner_e:
-                        logging.error(f"Database error processing item {item.number} (Tier {item.tier}) during bulk approval: {inner_e}")
-                        session.rollback() # Rollback internal transaction if error, but try next item
-                    except Exception as inner_e:
-                        logging.error(f"Unexpected error processing item {item.number} (Tier {item.tier}) during bulk approval: {inner_e}")
-            
-                session.commit() # Final commit for all processed items
-                await update.message.reply_text(f"✅ Approved {count} tickets in bulk.")
-            except SQLAlchemyError as e:
-                session.rollback()
-                logging.error(f"Database error during bulk approval operation: {e}")
-                await update.message.reply_text("❌ A database error occurred during bulk approval. Some tickets might not have been processed.")
-            except TelegramError as e:
-                logging.error(f"Telegram API error sending bulk approval confirmation: {e}")
-
-
-    # ============= DRAW SYSTEM =============
-    async def _conduct_draw(self, session, tier: int):
-        """Conducts a lottery draw for a specific tier if it's sold out."""
-        # Find the last announced draw for this tier to ensure we only consider
-        # tickets purchased *after* that draw.
-        last_draw = session.query(LotteryDraw).filter_by(
-            tier=tier, status='announced'
-        ).order_by(LotteryDraw.drawn_at.desc()).first()
-        
-        # Query for all *approved* tickets for this tier.
-        query = session.query(Ticket).filter_by(tier=tier, is_approved=True)
-        if last_draw:
-            query = query.filter(Ticket.purchased_at > last_draw.drawn_at)
-            
-        tickets = query.all()
-        
-        # If no eligible tickets, log warning and potentially reset counters
-        if not tickets:
-            logging.warning(f"No new approved tickets found for tier {tier} draw since last announcement. Checking settings.")
-            settings = session.query(LotterySettings).filter_by(tier=tier).first()
-            if settings and settings.sold_tickets >= settings.total_tickets:
-                # If tier is marked as sold out but no tickets, reset for next round
-                settings.sold_tickets = 0
-                settings.prize_pool = 0
-                session.commit()
-                if ADMIN_IDS:
-                    try:
-                        await self.application.bot.send_message(
-                            chat_id=ADMIN_IDS[0], # Notify first admin
-                            text=f"⚠️ Tier {tier} was marked as sold out, but no new unique tickets found for a draw. Counters have been reset."
-                        )
-                    except TelegramError as e:
-                        logging.error(f"Failed to notify admin about no-ticket draw reset: {e}")
-            return # Exit as no draw can be conducted
-
-        # Randomly select the winning ticket
-        winner_ticket = random.choice(tickets)
-        
-        # Get the current prize pool for this tier
-        settings = session.query(LotterySettings).filter_by(tier=tier).first()
-        prize = settings.prize_pool if settings else 0.0 # Default to 0.0 if settings not found
-        
-        # Record the draw
-        draw = LotteryDraw(
-            winning_number=winner_ticket.number,
-            tier=tier,
-            status='pending', # Draw is pending announcement by admin
-            drawn_at=datetime.now(pytz.utc)
-        )
-        session.add(draw)
-        session.flush()  # Ensures draw.id is populated before winner_entry depends on it
-        
-        # Record the winner
-        winner_entry = Winner(
-            draw_id=draw.id,
-            user_id=winner_ticket.user_id,
-            number=winner_ticket.number,
-            tier=tier,
-            prize=prize
-        )
-        session.add(winner_entry)
-        
-        # Reset tier counters immediately after a draw has been determined
-        if settings:
-            settings.sold_tickets = 0
-            settings.prize_pool = 0
-        
-        session.commit() # Commit all changes from the draw
-        
-        # Notify admins about the draw and prompt for announcement
-        for admin_id in ADMIN_IDS:
-            try:
-                await self.application.bot.send_message(
-                    chat_id=admin_id,
-                    text=(f"🎰 Automatic Draw Complete (Tier {tier} Birr) 🎰\n\n"
-                                f"<b>Winning Number:</b> #{winner_ticket.number}\n"
-                                f"<b>Winner User ID:</b> {winner_ticket.user_id}\n"
-                                f"<b>Prize:</b> {prize:.2f} Birr\n\n"
-                                f"<b>Action Required:</b> Please use <code>/announce_{tier}</code> to publish this winner to the channel and make it official!"),
-                    parse_mode='HTML'
-                )
-            except TelegramError as e:
-                logging.error(f"Failed to notify admin {admin_id} about automatic draw: {e}")
-
-    async def _manual_draw(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Admin-triggered manual draw for a specific tier."""
-        if not self._is_admin(update.effective_user.id):
-            await update.message.reply_text("🚫 You are not authorized to use this command.")
-            return
-            
-        try:
-            if not context.args or not context.args[0].isdigit():
-                await update.message.reply_text("Usage: /draw <TIER> (e.e.g., /draw 100). Valid tiers: 100, 200, 300.")
-                return
-
-            tier = int(context.args[0])
-            if tier not in [100, 200, 300]:
-                await update.message.reply_text("Invalid tier. Please use 100, 200, or 300.")
-                return
-
-            await update.message.reply_text(f"Attempting to conduct manual draw for Tier {tier}...")
-            with Session() as session:
-                await self._conduct_draw(session, tier) # Call the core draw logic
-            await update.message.reply_text(f"Manual draw process initiated for Tier {tier}. Check admin notifications for results and announcement command.")
-        except SQLAlchemyError as e:
-            logging.error(f"Database error during manual draw: {e}")
-            await update.message.reply_text("❌ A database error occurred during the manual draw. Please try again.")
-        except Exception as e:
-            logging.error(f"Unexpected error during manual draw: {e}")
-            await update.message.reply_text(f"❌ An unexpected error occurred: {e}. Please check logs.")
-        except TelegramError as e:
-            logging.error(f"Telegram API error in _manual_draw: {e}")
-
-
-    async def _announce_winners(self, update: Update, context: ContextTypes.DEFAULT_TYPE, tier: int):
-        """Admin command to publish the results of a draw to the public channel."""
-        if not self._is_admin(update.effective_user.id):
-            await update.message.reply_text("🚫 You are not authorized to use this command.")
-            return
-
-        if CHANNEL_ID is None:
-            await update.message.reply_text("❌ CHANNEL_ID environment variable is not configured or invalid. Cannot announce winners.")
-            return
-
-        with Session() as session:
-            try:
-                # Find the most recent draw for this tier that is still 'pending' announcement
-                winner_entry = session.query(Winner).join(LotteryDraw).filter(
-                    LotteryDraw.tier == tier,
-                    LotteryDraw.status == 'pending'
-                ).order_by(LotteryDraw.drawn_at.desc()).first()
-                
-                if not winner_entry:
-                    await update.message.reply_text(f"No pending winners to announce for Tier {tier}.")
-                    # Provide info on last announced winner if no pending ones
-                    last_announced_winner = session.query(Winner).join(LotteryDraw).filter(
-                        LotteryDraw.tier == tier,
-                        LotteryDraw.status == 'announced'
-                    ).order_by(LotteryDraw.drawn_at.desc()).first()
-                    if last_announced_winner:
-                        user_last = session.query(User).get(last_announced_winner.user_id)
-                        username_last = f"@{user_last.username}" if user_last and user_last.username else f"User ID: {last_announced_winner.user_id}"
-                        await update.message.reply_text(f"Last announced winner for Tier {tier} was #{last_announced_winner.number} ({username_last}) on {last_announced_winner.draw.drawn_at.strftime('%Y-%m-%d %H:%M %Z')}.")
+                if not pending_reservations:
+                    await update.message.reply_text("✅ No pending approvals to approve all.")
                     return
-                
-                # Mark the draw as 'announced'
-                winner_entry.draw.status = 'announced'
-                session.commit()
-                
-                # Get user information for the winner to display in the announcement
-                user = session.query(User).get(winner_entry.user_id)
-                username = f"@{user.username}" if user and user.username else f"User ID: {winner_entry.user_id}"
-                
-                message = (
-                    f"🏆 **Tier {tier} Birr Winner Announcement!** 🏆\n\n"
-                    f"🎫 Winning Number: `{winner_entry.number}`\n"
-                    f"💰 Prize Amount: `{winner_entry.prize:.2f} Birr`\n"
-                    f"👤 Winner: {username}\n\n"
-                    f"Congratulations to our lucky winner!\n"
-                    f"Please contact {ADMIN_CONTACT_HANDLE} to claim your prize!"
+
+                for res in pending_reservations:
+                    user = session.query(User).filter_by(id=res.user_id).first()
+                    if not user:
+                        messages.append(f"Skipping reservation for unknown user ID {res.user_id}.")
+                        failed_count += 1
+                        continue
+
+                    # Double check if number is available before approving (race condition check)
+                    if not self._is_number_available(res.number, res.tier):
+                        messages.append(f"Skipping ticket #{res.number} (Tier {res.tier}) for @{user.username} as it's no longer available.")
+                        session.delete(res) # Delete the conflicting reservation
+                        session.commit()
+                        failed_count += 1
+                        continue
+
+                    try:
+                        new_ticket = Ticket(
+                            user_id=user.id,
+                            number=res.number,
+                            tier=res.tier,
+                            is_approved=True,
+                            purchased_at=res.reserved_at
+                        )
+                        session.add(new_ticket)
+                        
+                        lottery_setting = session.query(LotterySettings).filter_by(tier=res.tier).first()
+                        if lottery_setting:
+                            lottery_setting.sold_tickets += 1
+                            lottery_setting.prize_pool += res.tier * 0.8
+                            session.add(lottery_setting)
+
+                        session.delete(res) # Remove reservation after approval
+                        session.commit() # Commit each approval to avoid losing progress on error
+                        approved_count += 1
+                        messages.append(f"Approved: Ticket #{res.number} (Tier {res.tier}) for @{user.username}")
+
+                        try:
+                            await context.bot.send_message(
+                                chat_id=user.telegram_id,
+                                text=f"🎉 Your ticket #{res.number} (Tier {res.tier} Birr) has been approved! Good luck in the draw!"
+                            )
+                        except TelegramError as e:
+                            logging.error(f"Failed to notify user {user.telegram_id} about ticket approval: {e}")
+                            messages.append(f"Failed to notify user {user.username} (ID: {user.telegram_id}).")
+
+                    except SQLAlchemyError as e:
+                        session.rollback()
+                        logging.error(f"Database error during batch approval for user {user.telegram_id}, number {res.number}, tier {res.tier}: {e}")
+                        messages.append(f"Failed to approve ticket #{res.number} (Tier {res.tier}) for @{user.username} due to DB error.")
+                        failed_count += 1
+                    except Exception as e:
+                        session.rollback()
+                        logging.error(f"Unexpected error during batch approval for user {user.telegram_id}, number {res.number}, tier {res.tier}: {e}")
+                        messages.append(f"Failed to approve ticket #{res.number} (Tier {res.tier}) for @{user.username} due to unexpected error.")
+                        failed_count += 1
+
+                final_message = (
+                    f"Batch approval complete:\n"
+                    f"✅ Approved: {approved_count} tickets\n"
+                    f"❌ Failed: {failed_count} tickets\n\n"
+                    + "\n".join(messages)
                 )
                 
-                try:
-                    await self.application.bot.send_message(
-                        chat_id=CHANNEL_ID,
-                        text=message,
-                        parse_mode='Markdown' # Use Markdown for bold and monospace
-                    )
-                    await update.message.reply_text(f"✅ Tier {tier} results announced successfully to channel!")
-                except TelegramError as e:
-                    logging.error(f"Failed to announce winner to channel {CHANNEL_ID}: {e}")
-                    await update.message.reply_text(f"❌ Failed to announce to channel (Error: {e}). Check CHANNEL_ID and bot permissions.")
-            except SQLAlchemyError as e:
-                session.rollback()
-                logging.error(f"Database error during winner announcement: {e}")
-                await update.message.reply_text("❌ A database error occurred during winner announcement. Please check logs.")
-            except Exception as e:
-                logging.error(f"Unexpected error during winner announcement: {e}")
-                await update.message.reply_text(f"❌ An unexpected error occurred: {e}. Please check logs.")
-
-
-    # ============= USER COMMANDS =============
-    async def _show_progress(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Displays the current ticket sales progress for all active tiers."""
-        with Session() as session:
-            try:
-                tiers = session.query(LotterySettings).filter_by(is_active=True).order_by(LotterySettings.tier).all()
-                
-                message = "📊 <b>Ticket Sales Progress</b>\n\n"
-                if not tiers:
-                    message += "No active lottery tiers found at the moment."
+                # Split and send if too long
+                if len(final_message) > 4096:
+                    chunks = [final_message[i:i+4000] for i in range(0, len(final_message), 4000)]
+                    for chunk in chunks:
+                        await update.message.reply_text(chunk)
                 else:
-                    for settings in tiers:
-                        remaining = settings.total_tickets - settings.sold_tickets
-                        message += (
-                            f"<b>Tier {settings.tier} Birr:</b>\n"
-                            f"• Sold: {settings.sold_tickets} / {settings.total_tickets}\n"
-                            f"• Remaining: {remaining}\n"
-                            f"• Current Prize Pool: {settings.prize_pool:.2f} Birr\n\n"
-                        )
-                
-                await update.message.reply_text(message, parse_mode='HTML')
-            except SQLAlchemyError as e:
-                logging.error(f"Database error showing progress: {e}")
-                await update.message.reply_text("❌ An error occurred while fetching progress data. Please try again later.")
-            except TelegramError as e:
-                logging.error(f"Telegram API error showing progress: {e}")
+                    await update.message.reply_text(final_message)
 
-    async def _show_past_winners(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Displays the last 5 announced winners across all tiers."""
+            except SQLAlchemyError as e:
+                session.rollback()
+                logging.error(f"Database error during _approve_all_pending initial query: {e}")
+                await update.message.reply_text("❌ An error occurred while fetching pending approvals for batch processing.")
+            except TelegramError as e:
+                logging.error(f"Telegram API error during _approve_all_pending: {e}")
+
+
+    # ============= DRAW & ANNOUNCEMENT =============
+    async def _manual_draw(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Manually triggers a lottery draw for a specific tier (admin only).
+        Usage: /draw <tier>
+        """
+        if not self._is_admin(update.effective_user.id):
+            await update.message.reply_text("🚫 You are not authorized to use this command.")
+            return
+
+        if len(context.args) != 1:
+            await update.message.reply_text("Usage: /draw <tier_number_e.g._100_200_300>")
+            return
+        
+        try:
+            tier_to_draw = int(context.args[0])
+            if tier_to_draw not in [100, 200, 300]:
+                await update.message.reply_text("Invalid tier. Please specify 100, 200, or 300.")
+                return
+        except ValueError:
+            await update.message.reply_text("Invalid tier. Please specify a numeric tier (e.g., 100).")
+            return
+
         with Session() as session:
             try:
-                winners = session.query(Winner, LotteryDraw).join(LotteryDraw).filter(
-                    LotteryDraw.status == 'announced'
-                ).order_by(LotteryDraw.drawn_at.desc()).limit(5).all()
-                
-                if not winners:
-                    await update.message.reply_text("No past winners yet. Be the first to win!")
+                # Check for active tickets in this tier
+                eligible_tickets = session.query(Ticket).filter_by(tier=tier_to_draw, is_approved=True).all()
+                if not eligible_tickets:
+                    await update.message.reply_text(f"❌ No approved tickets available for the {tier_to_draw} Birr tier. Cannot perform draw.")
                     return
-                    
-                message = "🏆 <b>Past Winners (Last 5)</b> 🏆\n\n"
-                for winner_entry, draw in winners:
-                    user = session.query(User).get(winner_entry.user_id)
-                    username = f"@{user.username}" if user and user.username else f"User ID: {winner_entry.user_id}"
-                    
-                    message += (
-                        f"<b>Tier {winner_entry.tier} Birr:</b>\n"
-                        f"• Winning Number: #{winner_entry.number}\n"
-                        f"• Winner: {username}\n"
-                        f"• Prize: {winner_entry.prize:.2f} Birr\n"
-                        f"• Draw Date: {draw.drawn_at.strftime('%Y-%m-%d %H:%M %Z')}\n\n"
-                    )
                 
-                await update.message.reply_text(message, parse_mode='HTML')
+                # Check if a draw for this tier is already pending or announced
+                latest_draw = session.query(LotteryDraw).filter_by(tier=tier_to_draw).order_by(LotteryDraw.drawn_at.desc()).first()
+                if latest_draw and latest_draw.status in ['pending', 'announced']:
+                    # Additional check: If all tickets are sold for this tier and a draw is pending, maybe allow forced draw?
+                    lottery_setting = session.query(LotterySettings).filter_by(tier=tier_to_draw).first()
+                    if lottery_setting and lottery_setting.sold_tickets < lottery_setting.total_tickets:
+                        await update.message.reply_text(f"❌ A draw for the {tier_to_draw} Birr tier is already in '{latest_draw.status}' status. Waiting for all tickets to be sold or previous draw to be announced.")
+                        return
+                    # If all tickets are sold, and a draw is pending, allow forced draw.
+                    elif lottery_setting and lottery_setting.sold_tickets >= lottery_setting.total_tickets and latest_draw.status == 'pending':
+                         await update.message.reply_text(f"Warning: All tickets sold, but previous draw for tier {tier_to_draw} is pending. Proceeding with a new draw.")
+                    
+                winning_ticket = random.choice(eligible_tickets)
+                winning_number = winning_ticket.number
+                winner_user = session.query(User).filter_by(id=winning_ticket.user_id).first()
+                
+                # Calculate prize (assuming 80% of sold tickets value)
+                lottery_setting = session.query(LotterySettings).filter_by(tier=tier_to_draw).first()
+                prize_pool = lottery_setting.prize_pool if lottery_setting else 0
+                
+                # Create new draw entry
+                new_draw = LotteryDraw(
+                    winning_number=winning_number,
+                    tier=tier_to_draw,
+                    status='pending' # Set to pending, admin announces later
+                )
+                session.add(new_draw)
+                session.flush() # To get the new_draw.id
+
+                # Record winner
+                winner_entry = Winner(
+                    draw_id=new_draw.id,
+                    user_id=winner_user.id,
+                    number=winning_number,
+                    tier=tier_to_draw,
+                    prize=prize_pool # Store the prize pool at the time of draw
+                )
+                session.add(winner_entry)
+                session.commit()
+
+                await update.message.reply_text(
+                    f"🎉 Draw complete for {tier_to_draw} Birr tier!\n"
+                    f"Winning Number: <b>#{winning_number}</b>\n"
+                    f"Winner: @{winner_user.username or 'N/A'} (ID: <code>{winner_user.telegram_id}</code>)\n"
+                    f"Prize: {prize_pool:.2f} Birr.\n\n"
+                    "Please use /announce_{tier} to announce this winner publicly."
+                , parse_mode='HTML')
+
             except SQLAlchemyError as e:
-                logging.error(f"Database error showing past winners: {e}")
-                await update.message.reply_text("❌ An error occurred while fetching past winners. Please try again later.")
-            except TelegramError as e:
-                logging.error(f"Telegram API error showing past winners: {e}")
+                session.rollback()
+                logging.error(f"Database error during manual draw for tier {tier_to_draw}: {e}")
+                await update.message.reply_text("❌ An error occurred during the draw. Please check logs.")
+            except Exception as e:
+                logging.error(f"Unexpected error during manual draw: {e}")
+                await update.message.reply_text("❌ An unexpected error occurred. Please check logs.")
 
 
+    async def _announce_winners(self, update: Update, context: ContextTypes.DEFAULT_TYPE, tier_to_announce: int):
+        """Announces the winner of the latest draw for a specific tier to the channel (admin only).
+        Resets the tier for new tickets.
+        """
+        if not self._is_admin(update.effective_user.id):
+            await update.message.reply_text("🚫 You are not authorized to use this command.")
+            return
+        
+        if CHANNEL_ID is None:
+            await update.message.reply_text("❌ Channel ID is not configured. Please set the CHANNEL_ID environment variable.")
+            return
+
+        with Session() as session:
+            try:
+                # Find the latest pending draw for this tier
+                latest_draw = session.query(LotteryDraw).filter_by(
+                    tier=tier_to_announce,
+                    status='pending'
+                ).order_by(LotteryDraw.drawn_at.desc()).first()
+
+                if not latest_draw:
+                    await update.message.reply_text(f"❌ No pending draw found for {tier_to_announce} Birr tier to announce.")
+                    return
+
+                winner_entry = session.query(Winner).filter_by(draw_id=latest_draw.id).first()
+                if not winner_entry:
+                    await update.message.reply_text(f"❌ No winner recorded for draw ID {latest_draw.id}.")
+                    return
+                
+                winner_user = session.query(User).filter_by(id=winner_entry.user_id).first()
+                if not winner_user:
+                    await update.message.reply_text(f"❌ Winner user data not found for ID {winner_entry.user_id}.")
+                    return
+
+                # Build announcement message
+                announcement_text = (
+                    f"🎉 <b>Lottery Draw Result - {tier_to_announce} Birr Tier</b> 🎉\n\n"
+                    f"The winning number is: <b>#{latest_draw.winning_number}</b>!\n\n"
+                    f"Congratulations to our winner: "
+                    f"<b>@{winner_user.username or winner_user.telegram_id}</b>!\n\n"
+                    f"Prize: <b>{winner_entry.prize:.2f} Birr</b>\n\n"
+                    f"Winner, please contact {ADMIN_CONTACT_HANDLE} to claim your prize!\n\n"
+                    f"New tickets for the {tier_to_announce} Birr tier are now available! Use /buy to participate."
+                )
+
+                # Send announcement to channel
+                try:
+                    await context.bot.send_message(
+                        chat_id=CHANNEL_ID,
+                        text=announcement_text,
+                        parse_mode='HTML'
+                    )
+                    # Update draw status to announced
+                    latest_draw.status = 'announced'
+                    session.add(latest_draw)
+
+                    # Reset lottery settings for this tier to allow new sales
+                    lottery_setting = session.query(LotterySettings).filter_by(tier=tier_to_announce).first()
+                    if lottery_setting:
+                        lottery_setting.sold_tickets = 0
+                        lottery_setting.prize_pool = 0
+                        session.add(lottery_setting)
+                        # Delete all tickets and reservations for this tier
+                        session.query(Ticket).filter_by(tier=tier_to_announce).delete()
+                        session.query(ReservedNumber).filter_by(tier=tier_to_announce).delete()
+                    else:
+                        logging.warning(f"LotterySettings for tier {tier_to_announce} not found during announcement reset.")
+
+                    session.commit()
+                    await update.message.reply_text(f"✅ Winner for {tier_to_announce} Birr tier announced successfully to channel.")
+                except TelegramError as e:
+                    session.rollback() # Rollback if channel announcement fails
+                    logging.error(f"Failed to send announcement to channel {CHANNEL_ID}: {e}")
+                    await update.message.reply_text(f"❌ Failed to announce winner to channel. Error: {e}")
+                
+            except SQLAlchemyError as e:
+                session.rollback()
+                logging.error(f"Database error during winner announcement for tier {tier_to_announce}: {e}")
+                await update.message.reply_text("❌ An error occurred during winner announcement. Please check logs.")
+            except Exception as e:
+                session.rollback()
+                logging.error(f"Unexpected error during winner announcement: {e}")
+                await update.message.reply_text("❌ An unexpected error occurred. Please check logs.")
+
+
+    # ============= INFO COMMANDS =============
     async def _show_user_tickets(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Displays the current user's purchased tickets."""
+        """Displays all tickets purchased by the user."""
         user_telegram_id = update.effective_user.id
+
         with Session() as session:
             try:
                 user = session.query(User).filter_by(telegram_id=user_telegram_id).first()
                 if not user:
-                    await update.message.reply_text("You need to /start first to register your account and see your tickets!")
+                    await update.message.reply_text("❌ You don't have any tickets yet. Use /buy to get started!")
                     return
+
+                # Fetch all tickets (approved or not) and reservations
+                user_tickets = session.query(Ticket).filter_by(user_id=user.id).order_by(Ticket.purchased_at.desc()).all()
+                user_reservations = session.query(ReservedNumber).filter_by(user_id=user.id).order_by(ReservedNumber.reserved_at.desc()).all()
+
+                message = "🎫 <b>Your Tickets & Reservations</b>:\n\n"
+
+                if not user_tickets and not user_reservations:
+                    message += "You haven't purchased or reserved any tickets yet. Use /buy to get one!"
+                else:
+                    if user_tickets:
+                        message += "<b>Approved Tickets</b>:\n"
+                        for ticket in user_tickets:
+                            status = "✅ Approved" if ticket.is_approved else "⏳ Pending Approval"
+                            message += f"  - Ticket #{ticket.number} (Tier {ticket.tier} Birr) - {status} (Purchased: {ticket.purchased_at.strftime('%Y-%m-%d %H:%M:%S UTC')})\n"
+                        message += "\n"
                     
-                tickets = session.query(Ticket).filter_by(user_id=user.id).order_by(Ticket.purchased_at.desc()).all()
-                
-                if not tickets:
-                    await update.message.reply_text("You don't have any tickets yet! Use /buy to get one and try your luck!")
-                    return
-                    
-                message = "🎫 <b>Your Tickets:</b>\n\n"
-                for ticket in tickets:
-                    status_text = "Approved ✅" if ticket.is_approved else "Pending Verification ⏳"
-                    message += (
-                        f"• Ticket #{ticket.number} (Tier {ticket.tier} Birr)\n"
-                        f"  <i>Purchased: {ticket.purchased_at.strftime('%Y-%m-%d %H:%M %Z')}</i>\n"
-                        f"  <b>Status:</b> {status_text}\n\n"
-                    )
-                
+                    if user_reservations:
+                        message += "<b>Reserved Numbers (Awaiting Payment Proof)</b>:\n"
+                        for res in user_reservations:
+                            status = "⏳ Awaiting Photo" if not res.photo_id else "📷 Proof Received"
+                            message += f"  - Number #{res.number} (Tier {res.tier} Birr) - {status} (Reserved: {res.reserved_at.strftime('%Y-%m-%d %H:%M:%S UTC')})\n"
+                        message += "\n<i>Note: Reservations expire after 24 hours if payment proof isn't sent.</i>\n"
+
                 await update.message.reply_text(message, parse_mode='HTML')
             except SQLAlchemyError as e:
                 logging.error(f"Database error showing user tickets for {user_telegram_id}: {e}")
                 await update.message.reply_text("❌ An error occurred while fetching your tickets. Please try again later.")
             except TelegramError as e:
-                logging.error(f"Telegram API error showing user tickets: {e}")
+                logging.error(f"Telegram API error sending user tickets: {e}")
 
 
-    async def _cancel_purchase(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Cancels the current purchase conversation and deletes any active reservation."""
-        user_telegram_id = update.effective_user.id
-        number_reserved = context.user_data.get('number')
-        tier_reserved = context.user_data.get('tier')
-        
+    async def _show_progress(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Displays the progress of ticket sales for each tier."""
         with Session() as session:
             try:
-                user = session.query(User).filter_by(telegram_id=user_telegram_id).first()
-                if user and number_reserved and tier_reserved: # Only try to delete if details are present
-                    # Find and delete the specific reservation for this user, number, and tier
-                    reservation_to_delete = session.query(ReservedNumber).filter_by(
-                        user_id=user.id,
-                        number=number_reserved,
-                        tier=tier_reserved
-                    ).first()
-                    if reservation_to_delete:
-                        session.delete(reservation_to_delete)
-                        session.commit()
-                        logging.info(f"Reservation for user {user_telegram_id}, number {number_reserved}, tier {tier_reserved} cancelled and deleted.")
-                    else:
-                        logging.info(f"No active reservation found for user {user_telegram_id} during cancellation (possibly expired or already processed).")
-                elif not user:
-                    logging.info(f"User {user_telegram_id} attempted to cancel but not found in DB.")
-                else:
-                    logging.info(f"User {user_telegram_id} cancelled, but no active reservation data in user_data.")
+                tiers_settings = session.query(LotterySettings).order_by(LotterySettings.tier).all()
+                message = "📈 <b>Lottery Progress</b>:\n\n"
 
-                await update.message.reply_text("❌ Purchase cancelled. You can start a new purchase with /buy.")
-                # Clear user_data for the conversation to ensure a clean slate for next purchase
-                context.user_data.clear() 
-                return ConversationHandler.END
+                if not tiers_settings:
+                    message += "No lottery tiers configured. Please contact an admin."
+                else:
+                    for settings in tiers_settings:
+                        total = settings.total_tickets
+                        sold = settings.sold_tickets
+                        remaining = total - sold
+                        percentage = (sold / total * 100) if total > 0 else 0
+
+                        message += (
+                            f"<b>{settings.tier} Birr Tier</b>:\n"
+                            f"  Sold: {sold} / {total} tickets ({percentage:.2f}%)\n"
+                            f"  Remaining: {remaining} tickets\n"
+                            f"  Current Prize Pool: {settings.prize_pool:.2f} Birr\n"
+                            f"  Status: {'Active' if settings.is_active else 'Inactive'}\n\n"
+                        )
+                await update.message.reply_text(message, parse_mode='HTML')
             except SQLAlchemyError as e:
-                session.rollback()
-                logging.error(f"Database error during purchase cancellation for user {user_telegram_id}: {e}")
-                await update.message.reply_text("❌ An error occurred while cancelling your purchase. Please try again.")
-                return ConversationHandler.END
+                logging.error(f"Database error showing progress: {e}")
+                await update.message.reply_text("❌ An error occurred while fetching progress data. Please try again later.")
             except TelegramError as e:
-                logging.error(f"Telegram API error during purchase cancellation: {e}")
-                return ConversationHandler.END
+                logging.error(f"Telegram API error sending progress: {e}")
+
+
+    async def _show_past_winners(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Displays a list of past lottery winners."""
+        with Session() as session:
+            try:
+                past_winners = session.query(Winner).order_by(Winner.draw_id.desc()).limit(10).all() # Show last 10 winners
+
+                if not past_winners:
+                    await update.message.reply_text("🏆 No past winners yet. Be the first!")
+                    return
+
+                message = "🏆 <b>Past Lottery Winners</b>:\n\n"
+                for winner_entry in past_winners:
+                    user = session.query(User).filter_by(id=winner_entry.user_id).first()
+                    draw = session.query(LotteryDraw).filter_by(id=winner_entry.draw_id).first()
+                    
+                    username = user.username if user else "Unknown User"
+                    draw_date = draw.drawn_at.strftime('%Y-%m-%d') if draw else "N/A"
+
+                    message += (
+                        f"Draw Date: {draw_date}\n"
+                        f"Tier: {winner_entry.tier} Birr\n"
+                        f"Winning Number: #{winner_entry.number}\n"
+                        f"Winner: @{username}\n"
+                        f"Prize: {winner_entry.prize:.2f} Birr\n\n"
+                    )
+                await update.message.reply_text(message, parse_mode='HTML')
+            except SQLAlchemyError as e:
+                logging.error(f"Database error showing past winners: {e}")
+                await update.message.reply_text("❌ An error occurred while fetching past winners. Please try again later.")
+            except TelegramError as e:
+                logging.error(f"Telegram API error sending past winners: {e}")
+
+
+    # ============= UNKNOWN COMMAND/MESSAGE HANDLING =============
+    async def _handle_unknown_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Replies to unknown text messages."""
+        if update.message and update.message.text:
+            await update.message.reply_text(
+                "I'm sorry, I don't understand that command or message. "
+                "Please use one of the available commands like /buy, /numbers, /mytickets, or /progress."
+            )
 
     async def _handle_unknown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handles unknown commands."""
-        if update.message: # Ensure there's a message object
-            await update.message.reply_text(f"Sorry, I don't understand the command '{update.message.text}'. Please use one of the available commands like /start or /buy.")
+        """Replies to unknown commands."""
+        if update.message and update.message.text:
+            await update.message.reply_text(
+                "I'm sorry, that command is not recognized. "
+                "Please use one of the available commands like /buy, /numbers, /mytickets, or /progress."
+            )
 
-    async def _handle_unknown_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handles unknown non-command messages."""
-        if update.message and update.message.chat.type == "private" and not context.user_data: # If no active conversation
-            await update.message.reply_text("I'm a lottery bot! Use commands like /start, /buy, /progress. If you need help, type /help.")
-
-    async def run_polling_bot(self):
-        """Starts the bot's polling mechanism."""
-        logging.info("Starting Telegram bot polling...")
-        try:
-            # The .run_polling() method needs an event loop to be present in its thread.
-            # asyncio.run() will manage this for the calling thread.
-            await self.application.run_polling(drop_pending_updates=True)
-        except TelegramError as e:
-            logging.critical(f"Telegram Bot polling failed: {e}")
-        except Exception as e:
-            logging.critical(f"Unhandled exception in bot polling loop: {e}")
-
-
-# --- Global instance of the bot for internal use (e.g., scheduled tasks) ---
-# This will be initialized only once when the `run` function is called by Gunicorn
-telegram_bot_instance: Optional[LotteryBot] = None
-
-# --- Main Application Start Point for Gunicorn ---
-def run(environ, start_response):
-    """
-    Initializes the database, starts the Telegram bot in a background thread,
-    and returns the Flask application for Gunicorn to serve.
-    """
-    logging.basicConfig(
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        level=logging.INFO
-    )
-    
-    logging.info("Starting Lottery Bot application...")
-
-    try:
+    def run(self):
+        """Starts the bot and the Flask server."""
+        # Initialize the database
         init_db()
-    except Exception as e:
-        logging.critical(f"Failed to initialize database during startup: {e}. Flask health check will likely fail.")
-        raise # Re-raise to ensure Render service restarts if DB is critical for startup
-    
-    global telegram_bot_instance # Declare intent to modify global variable
-    if telegram_bot_instance is None: # Corrected: use 'is None' for identity check in Python
-        try:
-            # Start APScheduler in its own thread. This does NOT need an asyncio loop.
-            scheduler_thread = Thread(target=LotteryBot.init_schedulers_standalone, daemon=True)
+
+        # Start APScheduler tasks in a separate thread if not already started
+        # This check prevents multiple schedulers from running if `run` is called multiple times
+        if not hasattr(self, '_scheduler_started') or not self._scheduler_started:
+            scheduler_thread = Thread(target=LotteryBot.init_schedulers_standalone)
+            scheduler_thread.daemon = True # Allow program to exit even if thread is running
             scheduler_thread.start()
-            logging.info("APScheduler background thread launched.")
+            self._scheduler_started = True
 
-            # Function to run the bot's asyncio polling loop in its own thread
-            def start_bot_async_loop_dedicated_thread():
-                # This ensures an event loop is explicitly created and set for THIS thread.
-                # All async operations for the bot instance will use this loop.
-                bot_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(bot_loop)
-                
-                # Instantiate the LotteryBot *within* this thread, after the event loop is set.
-                global telegram_bot_instance # Access and assign to the global instance
-                telegram_bot_instance = LotteryBot() # Bot object now built in this thread
-                
-                bot_loop.run_until_complete(telegram_bot_instance.run_polling_bot())
+        # Start the Flask app in a separate thread for health checks
+        flask_thread = Thread(target=lambda: app.run(host='0.0.0.0', port=os.getenv("PORT", 8080), debug=False, use_reloader=False))
+        flask_thread.daemon = True # Flask server runs in background
+        flask_thread.start()
+        logging.info(f"Flask health check server started on port {os.getenv('PORT', 8080)}")
 
-            # Start the bot's polling in a new, dedicated daemon thread
-            bot_polling_thread = Thread(target=start_bot_async_loop_dedicated_thread, daemon=True)
-            bot_polling_thread.start()
-            
-            logging.info("Telegram bot polling background thread started.")
-        except ValueError as e:
-            logging.critical(f"Bot initialization failed due to configuration error: {e}. Bot will not run.")
-            # If bot_token is missing, we don't start the bot.
-        except Exception as e:
-            logging.critical(f"Unexpected error during bot initialization: {e}. Bot may not be running.")
-    else:
-        logging.info("Telegram bot already initialized for this Gunicorn worker.")
-    
-    logging.info("Returning Flask WSGI application to Gunicorn.")
-    return app(environ, start_response)
+        # Start the Telegram bot polling
+        logging.info("Starting Telegram Bot polling...")
+        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
-# --- Local Development/Testing Entry Point ---
 if __name__ == '__main__':
+    # Configure logging
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO
     )
     
-    logging.info("Running application in local development mode.")
-
-    try:
-        init_db()
-    except Exception as e:
-        logging.critical(f"Failed to initialize database: {e}")
-        exit(1)
-        
-    # Start Flask health check server in a separate thread for local development
-    flask_thread = Thread(target=lambda: app.run(host='0.0.0.0', port=5000), daemon=True)
-    flask_thread.start()
-    logging.info("Flask health check running on port 5000 (local dev mode)")
-    
-    # Local bot instance setup
-    try:
-        # Function to run the bot's asyncio polling loop in its own thread
-        async def start_local_bot_async_dedicated_thread():
-            # Create and set a new event loop for this thread
-            local_bot_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(local_bot_loop)
-
-            # Instantiate the LotteryBot *within* this thread, after the event loop is set.
-            local_bot_instance_inner = LotteryBot() 
-            
-            await local_bot_instance_inner.run_polling_bot()
-        
-        # Start APScheduler for local dev instance in its own thread
-        scheduler_thread_local = Thread(target=LotteryBot.init_schedulers_standalone, daemon=True)
-        scheduler_thread_local.start()
-        logging.info("APScheduler background thread launched (local dev mode).")
-
-        # Start the bot's polling in a new, dedicated daemon thread
-        bot_polling_thread_local = Thread(target=lambda: asyncio.run(start_local_bot_async_dedicated_thread()), daemon=True)
-        bot_polling_thread_local.start()
-        logging.info("Telegram bot polling started in background (local dev mode)")
-        
-        # Keep the main thread alive.
-        flask_thread.join() 
-        bot_polling_thread_local.join()
-
-    except ValueError as e:
-        logging.critical(f"Local bot initialization failed due to configuration error: {e}.")
-    except Exception as e:
-        logging.critical(f"Unexpected error during local bot setup: {e}.")
+    # Run the bot
+    bot = LotteryBot()
+    bot.run()
