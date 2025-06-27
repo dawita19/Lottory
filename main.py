@@ -2,6 +2,7 @@ import os
 import logging
 import asyncio
 import random
+import argparse
 from threading import Thread
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Set
@@ -151,8 +152,12 @@ def clean_expired_reservations():
         session.query(ReservedNumber).filter(ReservedNumber.reserved_at < expiry_time).delete()
         session.commit()
 
-# --- Flask Health Check ---
+# --- Flask App ---
 app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return jsonify({"status": "OK", "service": "Lottery Bot"})
 
 @app.route('/health')
 def health_check():
@@ -183,14 +188,12 @@ class LotteryBot:
         self._init_schedulers()
 
     def _validate_config(self):
-        """Verify required configuration"""
         if not BOT_TOKEN:
             raise ValueError("TELEGRAM_BOT_TOKEN environment variable required")
         if not ADMIN_IDS:
             logging.warning("No ADMIN_IDS configured - admin commands disabled")
 
     def _init_schedulers(self):
-        """Initialize scheduled tasks"""
         from apscheduler.schedulers.background import BackgroundScheduler
         scheduler = BackgroundScheduler()
         scheduler.add_job(backup_db, 'interval', hours=6)
@@ -198,7 +201,6 @@ class LotteryBot:
         scheduler.start()
 
     def _check_spam(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Anti-spam protection with 2-second cooldown"""
         user_id = update.effective_user.id
         now = datetime.now().timestamp()
         if user_id in self.user_activity and now - self.user_activity[user_id] < 2:
@@ -208,14 +210,12 @@ class LotteryBot:
         return False
 
     def _check_maintenance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Check if bot is in maintenance mode"""
         if MAINTENANCE and update.effective_user.id not in ADMIN_IDS:
             update.message.reply_text("🔧 The bot is currently under maintenance. Please try again later.")
             return True
         return False
 
     def _setup_handlers(self):
-        """Configure all bot command handlers"""
         self.application.add_handler(TypeHandler(Update, self._check_spam), group=-1)
         self.application.add_handler(TypeHandler(Update, self._check_maintenance), group=-1)
         
@@ -249,9 +249,7 @@ class LotteryBot:
         )
         self.application.add_handler(conv_handler)
 
-    # ============= ADMIN COMMANDS =============
     async def _enable_maintenance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Enable maintenance mode (admin only)"""
         if update.effective_user.id not in ADMIN_IDS:
             return
             
@@ -260,7 +258,6 @@ class LotteryBot:
         await update.message.reply_text("🛠 Maintenance mode ENABLED")
 
     async def _disable_maintenance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Disable maintenance mode (admin only)"""
         if update.effective_user.id not in ADMIN_IDS:
             return
             
@@ -268,9 +265,7 @@ class LotteryBot:
         MAINTENANCE = False
         await update.message.reply_text("✅ Maintenance mode DISABLED")
 
-    # ============= USER MANAGEMENT =============
     async def _start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /start command"""
         with Session() as session:
             user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
             if not user:
@@ -284,20 +279,16 @@ class LotteryBot:
             else:
                 await update.message.reply_text(f"👋 Welcome back, {user.username}!")
 
-    # ============= TICKET MANAGEMENT =============
     def _get_available_numbers(self, tier: int) -> List[int]:
-        """Get available numbers for a tier"""
         with Session() as session:
             reserved = {r.number for r in session.query(ReservedNumber.number).filter_by(tier=tier).all()}
             confirmed = {t.number for t in session.query(Ticket.number).filter_by(tier=tier).all()}
             return sorted(list(set(range(1, 101)) - reserved - confirmed))
 
     def _is_number_available(self, number: int, tier: int) -> bool:
-        """Check if number is available"""
         return number in self._get_available_numbers(tier)
 
     async def _available_numbers(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show available numbers for all tiers"""
         tiers = {100: "💵 100 Birr", 200: "💰 200 Birr", 300: "💎 300 Birr"}
         message = "🔢 Available Numbers:\n\n"
         
@@ -313,9 +304,7 @@ class LotteryBot:
         
         await update.message.reply_text(message)
 
-    # ============= PURCHASE FLOW =============
     async def _start_purchase(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Start ticket purchase process"""
         if MAINTENANCE:
             await update.message.reply_text("🚧 Bot is under maintenance. Please try again later.")
             return ConversationHandler.END
@@ -338,7 +327,6 @@ class LotteryBot:
         return SELECT_TIER
 
     async def _select_tier(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Handle tier selection from inline keyboard"""
         query = update.callback_query
         await query.answer()
 
@@ -366,7 +354,6 @@ class LotteryBot:
         return SELECT_NUMBER
 
     async def _select_number(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Reserve selected number from inline keyboard"""
         query = update.callback_query
         await query.answer()
 
@@ -416,7 +403,6 @@ class LotteryBot:
         return PAYMENT_PROOF
 
     async def _receive_payment_proof(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Handle payment proof upload"""
         user_id = update.effective_user.id
         photo_id = update.message.photo[-1].file_id
         number = context.user_data.get('number')
@@ -460,7 +446,6 @@ class LotteryBot:
         return ConversationHandler.END
 
     async def _approve_payment(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Admin approval of payment"""
         if update.effective_user.id not in ADMIN_IDS:
             return
             
@@ -534,7 +519,6 @@ class LotteryBot:
             logging.error(f"Approval error: {e}")
 
     async def _show_pending_approvals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """List pending approvals for admins"""
         if update.effective_user.id not in ADMIN_IDS:
             return
             
@@ -562,7 +546,6 @@ class LotteryBot:
             await update.message.reply_text(message)
 
     async def _approve_all_pending(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Bulk approve all pending payments"""
         if update.effective_user.id not in ADMIN_IDS:
             return
             
@@ -619,9 +602,7 @@ class LotteryBot:
             
             await update.message.reply_text(f"Approved {count} tickets.")
 
-    # ============= DRAW SYSTEM =============
     async def _conduct_draw(self, session, tier: int):
-        """Automatically conduct draw when tier sells out"""
         last_draw = session.query(LotteryDraw).filter_by(tier=tier, status='announced').order_by(LotteryDraw.drawn_at.desc()).first()
         
         query = session.query(Ticket).filter_by(tier=tier, is_approved=True)
@@ -686,7 +667,6 @@ class LotteryBot:
                 logging.error(f"Failed to notify admin {admin_id} about draw: {e}")
 
     async def _manual_draw(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Admin-triggered manual draw for a specific tier."""
         if update.effective_user.id not in ADMIN_IDS:
             return
             
@@ -709,7 +689,6 @@ class LotteryBot:
             logging.error(f"Manual draw error: {e}")
 
     async def _announce_winners(self, update: Update, context: ContextTypes.DEFAULT_TYPE, tier: int):
-        """Publish winners to channel"""
         if update.effective_user.id not in ADMIN_IDS:
             return
 
@@ -758,9 +737,7 @@ class LotteryBot:
             
             await update.message.reply_text(f"✅ Tier {tier} results announced successfully!")
 
-    # ============= USER COMMANDS =============
     async def _show_progress(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show ticket sales progress per tier"""
         with Session() as session:
             tiers = session.query(LotterySettings).filter_by(is_active=True).all()
             
@@ -780,7 +757,6 @@ class LotteryBot:
             await update.message.reply_text(message, parse_mode='HTML')
 
     async def _show_past_winners(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Display last 5 announced winners across all tiers"""
         with Session() as session:
             winners = session.query(Winner, LotteryDraw).join(LotteryDraw).filter(
                 LotteryDraw.status == 'announced'
@@ -806,7 +782,6 @@ class LotteryBot:
             await update.message.reply_text(message, parse_mode='HTML')
 
     async def _show_user_tickets(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show user's purchased tickets"""
         with Session() as session:
             user = session.query(User).filter_by(telegram_id=update.effective_user.id).first()
             if not user:
@@ -831,7 +806,6 @@ class LotteryBot:
             await update.message.reply_text(message, parse_mode='HTML')
 
     async def _cancel_purchase(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Cancel current purchase conversation and delete reservation if exists."""
         if 'number' in context.user_data and 'tier' in context.user_data and update.effective_user:
             user_telegram_id = update.effective_user.id
             number_reserved = context.user_data['number']
@@ -861,72 +835,57 @@ class LotteryBot:
         logging.info("Starting Telegram bot polling...")
         await self.application.run_polling(drop_pending_updates=True)
 
-# --- Global instance of the bot for internal use ---
-telegram_bot_instance: Optional[LotteryBot] = None
-
-# --- Main Application Start Point for Gunicorn ---
-def run(environ, start_response):
-    """
-    Initializes the database, starts the Telegram bot in a background thread,
-    and returns the Flask application for Gunicorn to serve.
-    """
-    logging.basicConfig(
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        level=logging.INFO
-    )
+# --- Main Execution ---
+def run_bot():
+    """Run the Telegram bot in a separate thread"""
+    logging.info("Initializing bot services...")
+    init_db()
+    bot = LotteryBot()
     
-    logging.info("Starting Lottery Bot application...")
-
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     try:
-        init_db()
-    except Exception as e:
-        logging.critical(f"Failed to initialize database during startup: {e}")
-        pass 
-    
-    global telegram_bot_instance
-    if telegram_bot_instance is None:
-        telegram_bot_instance = LotteryBot()
+        loop.run_until_complete(bot.run_polling_bot())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        loop.close()
 
-        def start_bot_async_loop():
-            bot_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(bot_loop)
-            bot_loop.run_until_complete(telegram_bot_instance.run_polling_bot())
+def run_web():
+    """Run the Flask web service"""
+    logging.info("Starting Flask web service...")
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
 
-        bot_thread = Thread(target=start_bot_async_loop, daemon=True)
-        bot_thread.start()
-        
-        logging.info("Telegram bot background thread started.")
-    else:
-        logging.info("Telegram bot already initialized for this worker.")
-    
-    return app(environ, start_response)
-
-# --- Local Development/Testing Entry Point ---
 if __name__ == '__main__':
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO
     )
     
-    logging.info("Running application in local development mode.")
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--worker', action='store_true', help='Run in worker mode (Telegram bot only)')
+    parser.add_argument('--web', action='store_true', help='Run in web mode (Flask only)')
+    args = parser.parse_args()
 
     try:
         init_db()
     except Exception as e:
         logging.critical(f"Failed to initialize database: {e}")
         exit(1)
+
+    if args.worker:
+        logging.info("Running in worker mode (Telegram bot only)")
+        run_bot()
+    elif args.web:
+        logging.info("Running in web mode (Flask only)")
+        run_web()
+    else:
+        logging.info("Running in development mode (both Flask and Telegram bot)")
+        # Start Flask in a separate thread
+        flask_thread = Thread(target=run_web)
+        flask_thread.daemon = True
+        flask_thread.start()
         
-    flask_thread = Thread(target=lambda: app.run(host='0.0.0.0', port=5000))
-    flask_thread.start()
-    logging.info("Flask health check running on port 5000 (local dev mode)")
-    
-    local_bot_instance = LotteryBot()
-    async def start_local_bot_async():
-        await local_bot_instance.run_polling_bot()
-    
-    bot_thread = Thread(target=lambda: asyncio.run(start_local_bot_async()))
-    bot_thread.start()
-    logging.info("Telegram bot polling started in background (local dev mode)")
-    
-    flask_thread.join()
-    bot_thread.join()
+        # Run bot in main thread
+        run_bot()
