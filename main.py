@@ -219,9 +219,13 @@ def clean_expired_reservations():
         logging.error(f"Unexpected error during expired reservation cleanup: {e}")
 
 
-# --- Flask Health Check ---
-# Renamed 'app' to 'run' to match Gunicorn's expected entry point 'main:run'
-run = Flask(__name__)
+# --- Flask Application ---
+run = Flask(__name__) # Renamed app to run for Gunicorn
+
+@run.route('/') # New root endpoint
+def home():
+    """A simple home page for the Flask application."""
+    return "Lottery Bot Service is running. Use the Telegram bot to interact!"
 
 @run.route('/health') # Changed decorator from @app.route
 def health_check():
