@@ -1,7 +1,8 @@
 python-telegram-bot>=20.0
 python-dotenv==0.19.0
 Flask>=2.3.0
-APScheduler==3.6.3
+APScheduler>=4.0.0b1 # Updated to a more recent version
 gunicorn==20.1.0
 pytz==2023.3
 SQLAlchemy==1.4.39
+
