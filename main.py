@@ -51,8 +51,9 @@ if CHANNEL_ID_STR:
 BACKUP_DIR = os.getenv("BACKUP_DIR", "./backups")
 MAINTENANCE = os.getenv("MAINTENANCE_MODE", "false").lower() == "true"
 
-# Define a contact admin handle for users (can be a bot, group, or user)
-ADMIN_CONTACT_HANDLE = "@YourAdminHandle" # !!! IMPORTANT: CHANGE THIS TO YOUR ACTUAL ADMIN CONTACT !!!
+# --- ACTION REQUIRED: CHANGE THIS TO YOUR ACTUAL ADMIN CONTACT HANDLE ---
+# This handle will be displayed to users in winner announcements for claiming prizes.
+ADMIN_CONTACT_HANDLE = "@YourAdminHandle" # e.g., "@MyLotteryAdmin" or "@MyLotterySupportGroup"
 
 # Conversation states
 SELECT_TIER, SELECT_NUMBER, PAYMENT_PROOF = range(3)
@@ -1318,7 +1319,7 @@ def run(environ, start_response):
         logging.critical(f"Failed to initialize database during startup: {e}. Flask health check will likely fail.")
         raise # Re-raise to ensure Render service restarts if DB is critical for startup
     
-    global telegram_bot_instance
+    global telegram_bot_instance # Declare intent to modify global variable
     if telegram_bot_instance is None: # Ensure bot is only initialized once per Gunicorn worker
         try:
             # Start APScheduler in its own thread. This does NOT need an asyncio loop.
@@ -1334,8 +1335,8 @@ def run(environ, start_response):
                 asyncio.set_event_loop(bot_loop)
                 
                 # Instantiate the LotteryBot *within* this thread, after the event loop is set.
-                nonlocal telegram_bot_instance # Access the global instance defined above
-                telegram_bot_instance = LotteryBot()
+                global telegram_bot_instance # Access and assign to the global instance
+                telegram_bot_instance = LotteryBot() # Bot object now built in this thread
                 
                 bot_loop.run_until_complete(telegram_bot_instance.run_polling_bot())
 
@@ -1386,7 +1387,7 @@ if __name__ == '__main__':
 
             # Instantiate the LotteryBot *within* this thread, after the event loop is set.
             # This is the crucial part for resolving the event loop issue.
-            local_bot_instance_inner = LotteryBot()
+            local_bot_instance_inner = LotteryBot() # This is a new local variable, not global or nonlocal from parent
             
             await local_bot_instance_inner.run_polling_bot()
         
@@ -1408,4 +1409,3 @@ if __name__ == '__main__':
         logging.critical(f"Local bot initialization failed due to configuration error: {e}.")
     except Exception as e:
         logging.critical(f"Unexpected error during local bot setup: {e}.")
-
