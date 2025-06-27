@@ -52,7 +52,7 @@ BACKUP_DIR = os.getenv("BACKUP_DIR", "./backups")
 MAINTENANCE = os.getenv("MAINTENANCE_MODE", "false").lower() == "true"
 
 # Define a contact admin handle for users (can be a bot, group, or user)
-ADMIN_CONTACT_HANDLE = "@lij_hailemichael" # !!! IMPORTANT: CHANGE THIS TO YOUR ACTUAL ADMIN CONTACT !!!
+ADMIN_CONTACT_HANDLE = "@YourAdminHandle" # !!! IMPORTANT: CHANGE THIS TO YOUR ACTUAL ADMIN CONTACT !!!
 
 # Conversation states
 SELECT_TIER, SELECT_NUMBER, PAYMENT_PROOF = range(3)
@@ -124,10 +124,6 @@ def init_db():
     try:
         # Create backup directory only if using SQLite and it's not a read-only environment
         if DATABASE_URL.startswith('sqlite:'):
-            # Check if BACKUP_DIR is writable. On Render, /app is read-only.
-            # Best practice is to avoid writing to local filesystem on cloud platforms
-            # unless persistent storage (e.g., Render Disks) is configured.
-            # For this example, we assume it's okay for local testing or if disk is attached.
             if not os.path.exists(BACKUP_DIR):
                 try:
                     os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -254,12 +250,9 @@ def health_check():
 
 # --- Lottery Bot Implementation ---
 class LotteryBot:
-    def __init__(self):
-        # Validate configuration immediately
+    def __init__(self): # Simplified init: always builds its own application
         self._validate_config()
-
-        # Initialize Telegram Application Builder with the validated token
-        self.application = ApplicationBuilder().token(BOT_TOKEN).build()
+        self.application = ApplicationBuilder().token(BOT_TOKEN).build() # Build here
         
         self.user_activity = {} # For anti-spam
         self._setup_handlers()
@@ -295,8 +288,6 @@ class LotteryBot:
         user_id = update.effective_user.id
         now = datetime.now().timestamp()
         if user_id in self.user_activity and now - self.user_activity[user_id] < 2:
-            # Consider removing message for frequent spam to avoid flooding chat
-            # await update.message.reply_text("⚠️ Please wait before sending another request.")
             return True # Indicate that the event was handled and should stop processing
         self.user_activity[user_id] = now
         return False # Continue processing the event
@@ -344,7 +335,8 @@ class LotteryBot:
                 SELECT_NUMBER: [
                     MessageHandler(filters.Regex(r'^([1-9][0-9]?|100)$'), self._select_number),
                     # Handle inline keyboard callback for number selection
-                    MessageHandler(filters.Regex(r'^num_([1-9][0-9]?|100)$') & filters.UpdateType.CALLBACK_QUERY, self._select_number_callback)
+                    MessageHandler(filters.Regex(r'^num_([1-9][0-9]?|100)$') & filters.UpdateType.CALLBACK_QUERY, self._select_number_callback),
+                    MessageHandler(filters.Regex(r'^show_all_numbers_([1-9][0-9]?|100)$') & filters.UpdateType.CALLBACK_QUERY, self._select_number_callback)
                 ],
                 PAYMENT_PROOF: [MessageHandler(filters.PHOTO, self._receive_payment_proof)]
             },
@@ -538,14 +530,15 @@ class LotteryBot:
             
             # Simulate callback query for consistent logic
             class MockQuery:
-                def __init__(self, data, from_user):
+                def __init__(self, data, from_user, message): # Added message attribute
                     self.data = data
                     self.from_user = from_user
+                    self.message = message # Store message object
                 async def answer(self): pass
                 async def edit_message_text(self, text, reply_markup=None, parse_mode=None):
-                    await update.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+                    await self.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode) # Use message to reply
             
-            mock_query = MockQuery(f"tier_{tier}", update.effective_user)
+            mock_query = MockQuery(f"tier_{tier}", update.effective_user, update.message)
             return await self._select_tier_callback(mock_query, context)
             
         except ValueError:
@@ -670,14 +663,15 @@ class LotteryBot:
             
             # Simulate callback query for consistent logic
             class MockQuery:
-                def __init__(self, data, from_user):
+                def __init__(self, data, from_user, message): # Added message attribute
                     self.data = data
                     self.from_user = from_user
+                    self.message = message # Store message object
                 async def answer(self): pass
                 async def edit_message_text(self, text, reply_markup=None, parse_mode=None):
-                    await update.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+                    await self.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode) # Use message to reply
             
-            mock_query = MockQuery(f"num_{number}", update.effective_user)
+            mock_query = MockQuery(f"num_{number}", update.effective_user, update.message)
             return await self._select_number_callback(mock_query, context)
             
         except ValueError:
@@ -1280,24 +1274,23 @@ class LotteryBot:
 
     async def _handle_unknown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handles unknown commands."""
-        await update.message.reply_text(f"Sorry, I don't understand the command '{update.message.text}'. Please use one of the available commands like /start or /buy.")
+        if update.message: # Ensure there's a message object
+            await update.message.reply_text(f"Sorry, I don't understand the command '{update.message.text}'. Please use one of the available commands like /start or /buy.")
 
     async def _handle_unknown_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handles unknown non-command messages."""
-        # Only reply if message is from a private chat and not part of an ongoing conversation.
-        # This prevents spamming in groups/channels and interfering with conversations.
-        if update.message.chat.type == "private" and not context.user_data: # If no active conversation
+        if update.message and update.message.chat.type == "private" and not context.user_data: # If no active conversation
             await update.message.reply_text("I'm a lottery bot! Use commands like /start, /buy, /progress. If you need help, type /help.")
 
     async def run_polling_bot(self):
         """Starts the bot's polling mechanism."""
         logging.info("Starting Telegram bot polling...")
-        # Catch potential errors during polling to keep the thread alive or log gracefully
         try:
+            # The .run_polling() method needs an event loop to be present in its thread.
+            # asyncio.run() will manage this for the calling thread.
             await self.application.run_polling(drop_pending_updates=True)
         except TelegramError as e:
             logging.critical(f"Telegram Bot polling failed: {e}")
-            # Depending on error, might want to restart or just log and exit gracefully
         except Exception as e:
             logging.critical(f"Unhandled exception in bot polling loop: {e}")
 
@@ -1307,14 +1300,11 @@ class LotteryBot:
 telegram_bot_instance: Optional[LotteryBot] = None
 
 # --- Main Application Start Point for Gunicorn ---
-# This function will be called by Gunicorn to start the WSGI application (Flask)
-# and also launch the Telegram bot in a background thread.
-def run(environ, start_response): # This function takes the standard WSGI arguments
+def run(environ, start_response):
     """
     Initializes the database, starts the Telegram bot in a background thread,
     and returns the Flask application for Gunicorn to serve.
     """
-    # Configure logging for the Gunicorn process
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO
@@ -1322,36 +1312,35 @@ def run(environ, start_response): # This function takes the standard WSGI argume
     
     logging.info("Starting Lottery Bot application...")
 
-    # Initialize database tables
     try:
         init_db()
     except Exception as e:
-        logging.critical(f"Failed to initialize database during startup: {e}. Exiting.")
-        # If database init fails, the app cannot function. Consider raising again or exiting.
-        # For a web service, if this happens, the health check will also fail.
-        # Depending on deployment strategy, could just let it error out or return a 500 here.
-        pass # Allow Flask app to start but it will likely fail health checks
-
-    # Start Telegram bot and APScheduler in separate threads
+        logging.critical(f"Failed to initialize database during startup: {e}. Flask health check will likely fail.")
+        raise # Re-raise to ensure Render service restarts if DB is critical for startup
+    
     global telegram_bot_instance
     if telegram_bot_instance is None: # Ensure bot is only initialized once per Gunicorn worker
         try:
-            telegram_bot_instance = LotteryBot()
-            
-            # Initialize and start APScheduler tasks in a separate thread
-            # It's crucial that this runs outside the asyncio loop of the bot.
+            # Start APScheduler in its own thread. This does NOT need an asyncio loop.
             scheduler_thread = Thread(target=LotteryBot.init_schedulers_standalone, daemon=True)
             scheduler_thread.start()
             logging.info("APScheduler background thread launched.")
 
             # Function to run the bot's asyncio polling loop in its own thread
-            def start_bot_async_loop():
-                # Each new thread needs its own event loop if it's running async code
+            def start_bot_async_loop_dedicated_thread():
+                # This ensures an event loop is explicitly created and set for THIS thread.
+                # All async operations for the bot instance will use this loop.
                 bot_loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(bot_loop)
+                
+                # Instantiate the LotteryBot *within* this thread, after the event loop is set.
+                nonlocal telegram_bot_instance # Access the global instance defined above
+                telegram_bot_instance = LotteryBot()
+                
                 bot_loop.run_until_complete(telegram_bot_instance.run_polling_bot())
 
-            bot_polling_thread = Thread(target=start_bot_async_loop, daemon=True)
+            # Start the bot's polling in a new, dedicated daemon thread
+            bot_polling_thread = Thread(target=start_bot_async_loop_dedicated_thread, daemon=True)
             bot_polling_thread.start()
             
             logging.info("Telegram bot polling background thread started.")
@@ -1363,15 +1352,11 @@ def run(environ, start_response): # This function takes the standard WSGI argume
     else:
         logging.info("Telegram bot already initialized for this Gunicorn worker.")
     
-    # Gunicorn expects a WSGI callable, which is Flask's `app` instance.
-    # We pass the arguments received by `run` directly to Flask's `app`.
     logging.info("Returning Flask WSGI application to Gunicorn.")
     return app(environ, start_response)
 
 
 # --- Local Development/Testing Entry Point ---
-# This block is only executed when you run the script directly (e.g., `python main.py`).
-# It provides a way to run both Flask and the bot locally without Gunicorn.
 if __name__ == '__main__':
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -1384,37 +1369,43 @@ if __name__ == '__main__':
         init_db()
     except Exception as e:
         logging.critical(f"Failed to initialize database: {e}")
-        exit(1) # Exit if local DB setup fails
-
+        exit(1)
+        
     # Start Flask health check server in a separate thread for local development
     flask_thread = Thread(target=lambda: app.run(host='0.0.0.0', port=5000), daemon=True)
     flask_thread.start()
     logging.info("Flask health check running on port 5000 (local dev mode)")
     
-    # Local bot instance for development
+    # Local bot instance setup
     try:
-        local_bot_instance = LotteryBot()
+        # Function to run the bot's asyncio polling loop in its own thread
+        async def start_local_bot_async_dedicated_thread():
+            # Create and set a new event loop for this thread
+            local_bot_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(local_bot_loop)
+
+            # Instantiate the LotteryBot *within* this thread, after the event loop is set.
+            # This is the crucial part for resolving the event loop issue.
+            local_bot_instance_inner = LotteryBot()
+            
+            await local_bot_instance_inner.run_polling_bot()
         
-        # Initialize and start APScheduler for local dev instance in its own thread
+        # Start APScheduler for local dev instance in its own thread
         scheduler_thread_local = Thread(target=LotteryBot.init_schedulers_standalone, daemon=True)
         scheduler_thread_local.start()
         logging.info("APScheduler background thread launched (local dev mode).")
 
-        async def start_local_bot_async():
-            await local_bot_instance.run_polling_bot()
-        
-        bot_polling_thread_local = Thread(target=lambda: asyncio.run(start_local_bot_async()), daemon=True)
+        # Start the bot's polling in a new, dedicated daemon thread
+        bot_polling_thread_local = Thread(target=lambda: asyncio.run(start_local_bot_async_dedicated_thread()), daemon=True)
         bot_polling_thread_local.start()
         logging.info("Telegram bot polling started in background (local dev mode)")
         
-        # Keep the main thread alive. In production, Gunicorn handles this.
-        # Here, we keep it alive to allow background threads to run.
-        flask_thread.join() # Wait for Flask thread to finish (it won't in dev unless stopped)
-        bot_polling_thread_local.join() # Wait for bot thread (it won't in dev unless stopped)
+        # Keep the main thread alive.
+        flask_thread.join() 
+        bot_polling_thread_local.join()
 
     except ValueError as e:
         logging.critical(f"Local bot initialization failed due to configuration error: {e}.")
-        # Continue running Flask if bot fails, or exit if bot is critical
     except Exception as e:
         logging.critical(f"Unexpected error during local bot setup: {e}.")
 
