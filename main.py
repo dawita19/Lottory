@@ -4,12 +4,12 @@ import asyncio
 import random
 from threading import Thread
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Set
 
 from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application,
+    ApplicationBuilder,
     CommandHandler,
     MessageHandler,
     ConversationHandler,
@@ -96,7 +96,10 @@ class ReservedNumber(Base):
 def init_db():
     """Initialize database with all required tables"""
     try:
-        os.makedirs(BACKUP_DIR, exist_ok=True)
+        # Only create backup dir if not using Render's read-only filesystem
+        if not DATABASE_URL.startswith('postgres'):
+            os.makedirs(BACKUP_DIR, exist_ok=True)
+        
         Base.metadata.create_all(engine)
         
         # Initialize ticket tiers if they don't exist
@@ -110,11 +113,18 @@ def init_db():
     except OperationalError as e:
         logging.critical(f"Database connection failed: {e}")
         raise
+    except Exception as e:
+        logging.critical(f"Database initialization error: {e}")
+        raise
 
 # --- Backup System ---
 def backup_db():
     """Create timestamped database backup"""
     try:
+        if DATABASE_URL.startswith('postgres'):
+            logging.info("Skipping backup for PostgreSQL (handled by Render)")
+            return
+            
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         backup_path = f"{BACKUP_DIR}/backup_{timestamp}.db"
         
@@ -123,16 +133,8 @@ def backup_db():
             import shutil
             db_file = DATABASE_URL.split("///")[-1]
             shutil.copy2(db_file, backup_path)
-        else:
-            # For other databases, use SQLAlchemy backup
-            from sqlalchemy import create_engine
-            backup_engine = create_engine(f"sqlite:///{backup_path}")
-            with engine.connect() as src:
-                with backup_engine.connect() as dst:
-                    src.connection.backup(dst.connection)
-        
-        logging.info(f"Database backed up to {backup_path}")
-        clean_old_backups()
+            logging.info(f"Database backed up to {backup_path}")
+            clean_old_backups()
     except Exception as e:
         logging.error(f"Backup failed: {str(e)}")
 
@@ -178,7 +180,7 @@ def health_check():
 class LotteryBot:
     def __init__(self):
         self._validate_config()
-        self.application = Application.builder().token(BOT_TOKEN).build()
+        self.application = ApplicationBuilder().token(BOT_TOKEN).build()
         self.user_activity = {}
         self._setup_handlers()
         self._init_schedulers()
@@ -251,7 +253,7 @@ class LotteryBot:
         )
         self.application.add_handler(conv_handler)
 
-    # ============= MAINTENANCE MODE HANDLERS =============
+    # ============= ADMIN COMMANDS =============
     async def _enable_maintenance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Enable maintenance mode (admin only)"""
         if update.effective_user.id not in ADMIN_IDS:
@@ -285,6 +287,33 @@ class LotteryBot:
                 await update.message.reply_text("🎉 Welcome to Lottery Bot!")
             else:
                 await update.message.reply_text(f"👋 Welcome back, {user.username}!")
+
+    # ============= TICKET MANAGEMENT =============
+    def _get_available_numbers(self, tier: int) -> List[int]:
+        """Get available numbers for a tier"""
+        with Session() as session:
+            # Get reserved numbers
+            reserved = {r.number for r in session.query(ReservedNumber.number).filter_by(tier=tier).all()}
+            
+            # Get confirmed tickets
+            confirmed = {t.number for t in session.query(Ticket.number).filter_by(tier=tier).all()}
+            
+            return sorted(list(set(range(1, 101)) - reserved - confirmed))
+
+    def _is_number_available(self, number: int, tier: int) -> bool:
+        """Check if number is available"""
+        return number in self._get_available_numbers(tier)
+
+    async def _available_numbers(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show available numbers for all tiers"""
+        tiers = {100: "💵 100 Birr", 200: "💰 200 Birr", 300: "💎 300 Birr"}
+        message = "🔢 Available Numbers:\n\n"
+        
+        for tier, label in tiers.items():
+            available = self._get_available_numbers(tier)
+            message += f"{label}: {', '.join(map(str, available[:15]))}\n\n"
+        
+        await update.message.reply_text(message)
 
     # ============= PURCHASE FLOW =============
     async def _start_purchase(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -378,9 +407,6 @@ class LotteryBot:
             reservation.photo_id = photo_id
             session.commit()
             
-            # Get user info
-            user = session.query(User).get(reservation.user_id)
-            
             # Notify all admins
             for admin_id in ADMIN_IDS:
                 await self.application.bot.send_photo(
@@ -455,6 +481,81 @@ class LotteryBot:
         except Exception as e:
             await update.message.reply_text("Usage: /approve NUMBER TIER")
             logging.error(f"Approval error: {e}")
+
+    async def _show_pending_approvals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List pending approvals for admins"""
+        if update.effective_user.id not in ADMIN_IDS:
+            return
+            
+        with Session() as session:
+            pending = session.query(ReservedNumber).filter(
+                ReservedNumber.photo_id.isnot(None)
+            ).order_by(ReservedNumber.reserved_at).all()
+            
+            if not pending:
+                await update.message.reply_text("No pending approvals")
+                return
+                
+            message = "🔄 Pending Approvals:\n\n"
+            for item in pending:
+                user = session.query(User).get(item.user_id)
+                username = f"@{user.username}" if user.username else f"user {user.id}"
+                
+                message += (
+                    f"#{item.number} ({item.tier} Birr)\n"
+                    f"User: {username}\n"
+                    f"Approve: /approve {item.number} {item.tier}\n\n"
+                )
+            
+            await update.message.reply_text(message)
+
+    async def _approve_all_pending(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Bulk approve all pending payments"""
+        if update.effective_user.id not in ADMIN_IDS:
+            return
+            
+        with Session() as session:
+            pending = session.query(ReservedNumber).filter(
+                ReservedNumber.photo_id.isnot(None)
+            ).all()
+            
+            count = 0
+            for item in pending:
+                # Record ticket
+                ticket = Ticket(
+                    user_id=item.user_id,
+                    number=item.number,
+                    tier=item.tier,
+                    is_approved=True
+                )
+                session.add(ticket)
+                
+                # Update prize pool (50% of ticket price)
+                settings = session.query(LotterySettings).filter_by(tier=item.tier).first()
+                settings.sold_tickets += 1
+                settings.prize_pool += item.tier * 0.5
+                
+                # Check if tier is sold out
+                if settings.sold_tickets >= settings.total_tickets:
+                    await self._conduct_draw(session, item.tier)
+                
+                # Notify user
+                user = session.query(User).get(item.user_id)
+                await self.application.bot.send_message(
+                    chat_id=user.telegram_id,
+                    text=f"🎉 Payment Approved!\n\nTicket #{item.number} confirmed!"
+                )
+                
+                count += 1
+            
+            # Cleanup reservations
+            session.query(ReservedNumber).filter(
+                ReservedNumber.photo_id.isnot(None)
+            ).delete()
+            
+            session.commit()
+            
+            await update.message.reply_text(f"Approved {count} tickets")
 
     # ============= DRAW SYSTEM =============
     async def _conduct_draw(self, session, tier: int):
@@ -636,107 +737,6 @@ class LotteryBot:
                 )
             
             await update.message.reply_text(message)
-
-    async def _show_pending_approvals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """List pending approvals for admins"""
-        if update.effective_user.id not in ADMIN_IDS:
-            return
-            
-        with Session() as session:
-            pending = session.query(ReservedNumber).filter(
-                ReservedNumber.photo_id.isnot(None)
-            ).order_by(ReservedNumber.reserved_at).all()
-            
-            if not pending:
-                await update.message.reply_text("No pending approvals")
-                return
-                
-            message = "🔄 Pending Approvals:\n\n"
-            for item in pending:
-                user = session.query(User).get(item.user_id)
-                username = f"@{user.username}" if user.username else f"user {user.id}"
-                
-                message += (
-                    f"#{item.number} ({item.tier} Birr)\n"
-                    f"User: {username}\n"
-                    f"Approve: /approve {item.number} {item.tier}\n\n"
-                )
-            
-            await update.message.reply_text(message)
-
-    async def _approve_all_pending(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Bulk approve all pending payments"""
-        if update.effective_user.id not in ADMIN_IDS:
-            return
-            
-        with Session() as session:
-            pending = session.query(ReservedNumber).filter(
-                ReservedNumber.photo_id.isnot(None)
-            ).all()
-            
-            count = 0
-            for item in pending:
-                # Record ticket
-                ticket = Ticket(
-                    user_id=item.user_id,
-                    number=item.number,
-                    tier=item.tier,
-                    is_approved=True
-                )
-                session.add(ticket)
-                
-                # Update prize pool (50% of ticket price)
-                settings = session.query(LotterySettings).filter_by(tier=item.tier).first()
-                settings.sold_tickets += 1
-                settings.prize_pool += item.tier * 0.5
-                
-                # Check if tier is sold out
-                if settings.sold_tickets >= settings.total_tickets:
-                    await self._conduct_draw(session, item.tier)
-                
-                # Notify user
-                user = session.query(User).get(item.user_id)
-                await self.application.bot.send_message(
-                    chat_id=user.telegram_id,
-                    text=f"🎉 Payment Approved!\n\nTicket #{item.number} confirmed!"
-                )
-                
-                count += 1
-            
-            # Cleanup reservations
-            session.query(ReservedNumber).filter(
-                ReservedNumber.photo_id.isnot(None)
-            ).delete()
-            
-            session.commit()
-            
-            await update.message.reply_text(f"Approved {count} tickets")
-
-    async def _available_numbers(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show available numbers for all tiers"""
-        tiers = {100: "💵 100 Birr", 200: "💰 200 Birr", 300: "💎 300 Birr"}
-        message = "🔢 Available Numbers:\n\n"
-        
-        for tier, label in tiers.items():
-            available = self._get_available_numbers(tier)
-            message += f"{label}: {', '.join(map(str, available[:15]))}\n\n"
-        
-        await update.message.reply_text(message)
-
-    def _get_available_numbers(self, tier: int) -> List[int]:
-        """Get available numbers for a tier"""
-        with Session() as session:
-            # Get reserved numbers
-            reserved = {r.number for r in session.query(ReservedNumber.number).filter_by(tier=tier).all()}
-            
-            # Get confirmed tickets
-            confirmed = {t.number for t in session.query(Ticket.number).filter_by(tier=tier).all()}
-            
-            return sorted(set(range(1, 101)) - reserved - confirmed
-
-    def _is_number_available(self, number: int, tier: int) -> bool:
-        """Check if number is available"""
-        return number in self._get_available_numbers(tier)
 
     async def _cancel_purchase(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Cancel current purchase"""
