@@ -756,7 +756,8 @@ class LotteryBot:
         await self.application.run_polling()
 
 # --- Main Application ---
-if __name__ == '__main__':
+def run_bot():
+    """Run the Telegram bot in a separate thread"""
     # Configure logging
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -775,10 +776,6 @@ if __name__ == '__main__':
         logging.critical(f"Failed to initialize database: {e}")
         exit(1)
     
-    # Start Flask health check
-    Thread(target=lambda: app.run(host='0.0.0.0', port=5000)).start()
-    logging.info("Flask health check running on port 5000")
-    
     # Start Telegram bot
     try:
         bot = LotteryBot()
@@ -786,3 +783,13 @@ if __name__ == '__main__':
     except Exception as e:
         logging.critical(f"Bot failed: {e}")
         exit(1)
+
+if __name__ == '__main__':
+    # Start Flask health check in main thread
+    Thread(target=lambda: app.run(host='0.0.0.0', port=5000)).start()
+    logging.info("Flask health check running on port 5000")
+    
+    # Start bot in a separate thread
+    bot_thread = Thread(target=run_bot)
+    bot_thread.start()
+    bot_thread.join()
