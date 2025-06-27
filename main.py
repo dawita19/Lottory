@@ -58,7 +58,6 @@ class Ticket(Base):
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     number = Column(Integer, nullable=False)
     tier = Column(Integer, nullable=False)
-    # Use timezone-aware datetime for purchased_at
     purchased_at = Column(DateTime, default=lambda: datetime.now(pytz.utc))
     is_approved = Column(Boolean, default=False)
     user = relationship("User", back_populates="tickets")
@@ -68,9 +67,8 @@ class LotteryDraw(Base):
     id = Column(Integer, primary_key=True)
     winning_number = Column(Integer)
     tier = Column(Integer)
-    # Use timezone-aware datetime for drawn_at
     drawn_at = Column(DateTime, default=lambda: datetime.now(pytz.utc))
-    status = Column(String(20), default='pending')  # pending, announced
+    status = Column(String(20), default='pending')
 
 class Winner(Base):
     __tablename__ = 'winners'
@@ -95,20 +93,17 @@ class ReservedNumber(Base):
     number = Column(Integer, primary_key=True)
     tier = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'))
-    # Use timezone-aware datetime for reserved_at
     reserved_at = Column(DateTime, default=lambda: datetime.now(pytz.utc))
     photo_id = Column(String(255))
 
 def init_db():
     """Initialize database with all required tables"""
     try:
-        # Only create backup dir if not using Render's read-only filesystem
         if not DATABASE_URL.startswith('postgres'):
             os.makedirs(BACKUP_DIR, exist_ok=True)
             
         Base.metadata.create_all(engine)
         
-        # Initialize ticket tiers if they don't exist
         with Session() as session:
             for tier in [100, 200, 300]:
                 if not session.query(LotterySettings).filter_by(tier=tier).first():
@@ -123,7 +118,6 @@ def init_db():
         logging.critical(f"Database initialization error: {e}")
         raise
 
-# --- Backup System ---
 def backup_db():
     """Create timestamped database backup"""
     try:
@@ -131,11 +125,9 @@ def backup_db():
             logging.info("Skipping backup for PostgreSQL (handled by Render)")
             return
             
-        # Use timezone-aware datetime for timestamp
         timestamp = datetime.now(pytz.utc).strftime("%Y%m%d_%H%M%S")
         backup_path = f"{BACKUP_DIR}/backup_{timestamp}.db"
         
-        # For SQLite, we can just copy the file
         if DATABASE_URL.startswith("sqlite"):
             import shutil
             db_file = DATABASE_URL.split("///")[-1]
@@ -156,7 +148,6 @@ def clean_old_backups(keep_last=5):
 
 def clean_expired_reservations():
     """Remove reservations older than 24 hours"""
-    # Use timezone-aware datetime for comparison
     expiry_time = datetime.now(pytz.utc) - timedelta(hours=24)
     with Session() as session:
         session.query(ReservedNumber).filter(ReservedNumber.reserved_at < expiry_time).delete()
@@ -168,7 +159,6 @@ app = Flask(__name__)
 @app.route('/health')
 def health_check():
     try:
-        # Test database connection
         with Session() as session:
             session.execute("SELECT 1")
         
@@ -203,9 +193,7 @@ class LotteryBot:
     def init_schedulers(self):
         """Initialize scheduled tasks"""
         from apscheduler.schedulers.background import BackgroundScheduler
-        # When creating the scheduler, explicitly set a timezone for it to use
-        # using 'utc' as default as our datetimes are now UTC timezone-aware.
-        scheduler = BackgroundScheduler(timezone=pytz.utc) 
+        scheduler = BackgroundScheduler()
         scheduler.add_job(backup_db, 'interval', hours=6)
         scheduler.add_job(clean_expired_reservations, 'interval', hours=1)
         scheduler.start()
@@ -230,8 +218,6 @@ class LotteryBot:
 
     def _setup_handlers(self):
         """Configure all bot command handlers"""
-        # Anti-spam and maintenance checks
-        # These handlers must be at the highest group (lowest number) to run first.
         self.application.add_handler(TypeHandler(Update, self._check_spam), group=-1)
         self.application.add_handler(TypeHandler(Update, self._check_maintenance), group=-1)
         
@@ -304,12 +290,8 @@ class LotteryBot:
     def _get_available_numbers(self, tier: int) -> List[int]:
         """Get available numbers for a tier"""
         with Session() as session:
-            # Get reserved numbers
             reserved = {r.number for r in session.query(ReservedNumber.number).filter_by(tier=tier).all()}
-            
-            # Get confirmed tickets
             confirmed = {t.number for t in session.query(Ticket.number).filter_by(tier=tier).all()}
-            
             return sorted(list(set(range(1, 101)) - reserved - confirmed))
 
     def _is_number_available(self, number: int, tier: int) -> bool:
@@ -323,7 +305,6 @@ class LotteryBot:
         
         for tier, label in tiers.items():
             available = self._get_available_numbers(tier)
-            # Display only a subset if many are available to keep message concise
             display_numbers = available[:15]
             remaining_count = len(available) - len(display_numbers)
             
@@ -343,7 +324,6 @@ class LotteryBot:
             
         clean_expired_reservations()
         
-        # Prepare inline keyboard for tier selection
         keyboard = [
             [InlineKeyboardButton("100 Birr", callback_data="tier_100")],
             [InlineKeyboardButton("200 Birr", callback_data="tier_200")],
@@ -362,22 +342,20 @@ class LotteryBot:
     async def _select_tier(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Handle tier selection from inline keyboard"""
         query = update.callback_query
-        await query.answer() # Acknowledge the button press
+        await query.answer()
 
-        tier = int(query.data.split('_')[1]) # Extract tier from callback_data
+        tier = int(query.data.split('_')[1])
         context.user_data['tier'] = tier
         available = self._get_available_numbers(tier)
         
         if not available:
             await query.edit_message_text(f"❌ No numbers available for {tier} Birr tier. Please choose another tier or try later.")
-            return ConversationHandler.END # End conversation if no numbers
+            return ConversationHandler.END
             
-        # Create number selection keyboard
         buttons = [
             InlineKeyboardButton(str(num), callback_data=f"num_{num}")
-            for num in available[:20]  # Show first 20 numbers, or fewer if not 20 available
+            for num in available[:20]
         ]
-        # Arrange buttons in rows of 5 for better display
         keyboard = [buttons[i:i+5] for i in range(0, len(buttons), 5)]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -387,42 +365,37 @@ class LotteryBot:
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
-        return SELECT_NUMBER # Transition to next state
+        return SELECT_NUMBER
 
     async def _select_number(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Reserve selected number from inline keyboard"""
         query = update.callback_query
-        await query.answer() # Acknowledge the button press
+        await query.answer()
 
-        number = int(query.data.split('_')[1]) # Extract number from callback_data
+        number = int(query.data.split('_')[1])
         tier = context.user_data['tier']
         user_id = query.from_user.id
         
         if not self._is_number_available(number, tier):
             await query.edit_message_text("❌ Number already taken or no longer available! Please choose another number or tier.")
-            # Optionally, refresh the available numbers list or end conversation
-            return SELECT_NUMBER # Stay in the same state to allow re-selection
+            return SELECT_NUMBER
         
-        # Reserve number
         with Session() as session:
             user = session.query(User).filter_by(telegram_id=user_id).first()
             if not user:
                 await query.edit_message_text("❌ User not found. Please /start again.")
                 return ConversationHandler.END
                 
-            # Check for existing reservation by this user for this tier (to prevent multiple reservations)
             existing_reservation = session.query(ReservedNumber).filter_by(
                 user_id=user.id,
                 tier=tier
             ).first()
             if existing_reservation:
-                # If they have an existing reservation for this tier, update it
                 existing_reservation.number = number
-                existing_reservation.reserved_at = datetime.now(pytz.utc) # Use timezone-aware datetime
+                existing_reservation.reserved_at = datetime.now(pytz.utc)
                 session.add(existing_reservation)
                 logging.info(f"User {user_id} updated reservation for tier {tier} to number {number}")
             else:
-                # Create a new reservation
                 reserved = ReservedNumber(
                     number=number,
                     tier=tier,
@@ -455,7 +428,6 @@ class LotteryBot:
             await update.message.reply_text("❌ An error occurred with your reservation details. Please start the purchase process again with /buy.")
             return ConversationHandler.END
 
-        # Store payment proof
         with Session() as session:
             user_db = session.query(User).filter_by(telegram_id=user_id).first()
             if not user_db:
@@ -464,7 +436,7 @@ class LotteryBot:
 
             reservation = session.query(ReservedNumber).filter_by(
                 user_id=user_db.id,
-                number=number, # Filter by chosen number
+                number=number,
                 tier=tier
             ).first()
             
@@ -475,15 +447,14 @@ class LotteryBot:
             reservation.photo_id = photo_id
             session.commit()
             
-            # Notify all admins
             for admin_id in ADMIN_IDS:
                 try:
                     await self.application.bot.send_photo(
                         chat_id=admin_id,
                         photo=photo_id,
                         caption=(f"🔄 Payment Proof\n\nUser: @{update.effective_user.username or user_id}\n"
-                                   f"Number: #{number}\nTier: {tier} Birr\n\n"
-                                   f"Approve: /approve {number} {tier}")
+                               f"Number: #{number}\nTier: {tier} Birr\n\n"
+                               f"Approve: /approve {number} {tier}")
                     )
                 except Exception as e:
                     logging.error(f"Failed to send payment proof to admin {admin_id}: {e}")
@@ -509,8 +480,6 @@ class LotteryBot:
             tier = int(context.args[1])
             
             with Session() as session:
-                # Get reservation info
-                # Find by number and tier. The user_id is on the reservation, not directly passed here
                 reservation = session.query(ReservedNumber).filter_by(
                     number=number,
                     tier=tier
@@ -520,7 +489,6 @@ class LotteryBot:
                     await update.message.reply_text(f"❌ No pending reservation found for number #{number} tier {tier}.")
                     return
                 
-                # Check if ticket already exists (double check)
                 existing_ticket = session.query(Ticket).filter_by(
                     user_id=reservation.user_id,
                     number=number,
@@ -530,37 +498,32 @@ class LotteryBot:
 
                 if existing_ticket:
                     await update.message.reply_text(f"⚠️ Ticket #{number} (Tier {tier}) for user {reservation.user_id} is already approved.")
-                    session.delete(reservation) # Clean up the reservation if it somehow persists
+                    session.delete(reservation)
                     session.commit()
                     return
 
-                # Record ticket
                 ticket = Ticket(
                     user_id=reservation.user_id,
                     number=number,
                     tier=tier,
-                    purchased_at=reservation.reserved_at, # Use reservation time for consistency
+                    purchased_at=reservation.reserved_at,
                     is_approved=True
                 )
                 session.add(ticket)
                 
-                # Update prize pool (50% of ticket price) and sold tickets count
                 settings = session.query(LotterySettings).filter_by(tier=tier).first()
-                if settings: # Ensure settings exist
+                if settings:
                     settings.sold_tickets += 1
                     settings.prize_pool += tier * 0.5
                 else:
                     logging.warning(f"LotterySettings for tier {tier} not found. Prize pool not updated.")
                 
-                # Check if tier is sold out and conduct draw
                 if settings and settings.sold_tickets >= settings.total_tickets:
                     await self._conduct_draw(session, tier)
                 
-                # Cleanup reservation
                 session.delete(reservation)
                 session.commit()
                 
-                # Notify user
                 user = session.query(User).get(ticket.user_id)
                 if user:
                     await self.application.bot.send_message(
@@ -599,7 +562,7 @@ class LotteryBot:
                 message += (
                     f"Ticket: #{item.number} ({item.tier} Birr)\n"
                     f"User: {username}\n"
-                    f"Reserved At: {item.reserved_at.strftime('%Y-%m-%d %H:%M')}\n" # Format for display
+                    f"Reserved At: {item.reserved_at.strftime('%Y-%m-%d %H:%M')}\n"
                     f"Approve: /approve {item.number} {item.tier}\n\n"
                 )
             
@@ -618,7 +581,6 @@ class LotteryBot:
             count = 0
             for item in pending:
                 try:
-                    # Check for existing ticket to prevent duplicates
                     existing_ticket = session.query(Ticket).filter_by(
                         user_id=item.user_id,
                         number=item.number,
@@ -628,30 +590,26 @@ class LotteryBot:
 
                     if existing_ticket:
                         logging.info(f"Skipping approval for ticket #{item.number} (Tier {item.tier}) for user {item.user_id} - already approved.")
-                        session.delete(item) # Clean up the reservation
-                        continue # Move to the next item
+                        session.delete(item)
+                        continue
 
-                    # Record ticket
                     ticket = Ticket(
                         user_id=item.user_id,
                         number=item.number,
                         tier=item.tier,
-                        purchased_at=item.reserved_at, # Use reservation time
+                        purchased_at=item.reserved_at,
                         is_approved=True
                     )
                     session.add(ticket)
                     
-                    # Update prize pool (50% of ticket price)
                     settings = session.query(LotterySettings).filter_by(tier=item.tier).first()
                     if settings:
                         settings.sold_tickets += 1
                         settings.prize_pool += item.tier * 0.5
                     
-                    # Check if tier is sold out
                     if settings and settings.sold_tickets >= settings.total_tickets:
                         await self._conduct_draw(session, item.tier)
                     
-                    # Notify user
                     user = session.query(User).get(item.user_id)
                     if user:
                         await self.application.bot.send_message(
@@ -659,21 +617,18 @@ class LotteryBot:
                             text=f"🎉 Payment Approved!\n\nYour ticket #{item.number} for {item.tier} Birr is now confirmed!"
                         )
                     
-                    session.delete(item) # Delete reservation after processing
+                    session.delete(item)
                     count += 1
                 except Exception as e:
                     logging.error(f"Error processing pending approval for ticket {item.number} (Tier {item.tier}): {e}")
-                    # Don't re-raise, try to process other items
             
-            session.commit() # Commit all changes at once
+            session.commit()
             
             await update.message.reply_text(f"Approved {count} tickets.")
 
     # ============= DRAW SYSTEM =============
     async def _conduct_draw(self, session, tier: int):
         """Automatically conduct draw when tier sells out"""
-        # Get all approved tickets for this tier since the last draw
-        # Ensures that tickets already included in a past draw are not re-drawn
         last_draw = session.query(LotteryDraw).filter_by(tier=tier, status='announced').order_by(LotteryDraw.drawn_at.desc()).first()
         
         query = session.query(Ticket).filter_by(tier=tier, is_approved=True)
@@ -684,39 +639,31 @@ class LotteryBot:
         
         if not tickets:
             logging.warning(f"No *new* approved tickets found for tier {tier} draw since last announcement.")
-            # If no new tickets, prevent drawing and reset sold_tickets/prize_pool if they are already maxed
             settings = session.query(LotterySettings).filter_by(tier=tier).first()
             if settings and settings.sold_tickets >= settings.total_tickets:
-                 # Reset sold_tickets and prize_pool if full but no draw happened
                 settings.sold_tickets = 0
                 settings.prize_pool = 0
                 session.commit()
-                # Ensure ADMIN_IDS is not empty before attempting to send message
                 if ADMIN_IDS:
                     await self.application.bot.send_message(
-                        chat_id=ADMIN_IDS[0], # Send to first admin for notification
+                        chat_id=ADMIN_IDS[0],
                         text=f"⚠️ Tier {tier} sold out, but no new unique tickets found for draw. Counters reset."
                     )
             return
         
-        # Random selection of the winning ticket
         winner_ticket = random.choice(tickets)
         
-        # Get current prize pool
         settings = session.query(LotterySettings).filter_by(tier=tier).first()
-        prize = settings.prize_pool if settings else 0 # Default to 0 if settings not found
+        prize = settings.prize_pool if settings else 0
         
-        # Record draw
         draw = LotteryDraw(
             winning_number=winner_ticket.number,
             tier=tier,
-            status='pending', # Set to pending, to be announced manually by admin
-            drawn_at=datetime.now(pytz.utc) # Use timezone-aware datetime
-        )
+            status='pending',
+            drawn_at=datetime.now(pytz.utc)
         session.add(draw)
-        session.flush()  # To get the draw ID before commit
+        session.flush()
         
-        # Record winner
         winner_entry = Winner(
             draw_id=draw.id,
             user_id=winner_ticket.user_id,
@@ -726,25 +673,23 @@ class LotteryBot:
         )
         session.add(winner_entry)
         
-        # Reset tier counters immediately after draw decision
         if settings:
             settings.sold_tickets = 0
             settings.prize_pool = 0
         
         session.commit()
         
-        # Notify admins about the draw, prompt for announcement
         for admin_id in ADMIN_IDS:
             try:
                 await self.application.bot.send_message(
                     chat_id=admin_id,
                     text=(f"🎰 Automatic Draw Complete (Tier {tier} Birr)\n\n"
-                                f"Winning Number: #{winner_ticket.number}\n"
-                                f"Winner User ID: {winner_ticket.user_id}\n"
-                                f"Prize: {prize:.2f} Birr\n\n"
-                                f"<b>Please use /announce_{tier} to publish this winner to the channel.</b>"),
-                        parse_mode='HTML'
-                    )
+                          f"Winning Number: #{winner_ticket.number}\n"
+                          f"Winner User ID: {winner_ticket.user_id}\n"
+                          f"Prize: {prize:.2f} Birr\n\n"
+                          f"<b>Please use /announce_{tier} to publish this winner to the channel.</b>"),
+                    parse_mode='HTML'
+                )
             except Exception as e:
                 logging.error(f"Failed to notify admin {admin_id} about draw: {e}")
 
@@ -777,7 +722,6 @@ class LotteryBot:
             return
 
         with Session() as session:
-            # Find the most recent draw for this tier that is still 'pending'
             winner_entry = session.query(Winner).join(LotteryDraw).filter(
                 LotteryDraw.tier == tier,
                 LotteryDraw.status == 'pending'
@@ -785,7 +729,6 @@ class LotteryBot:
             
             if not winner_entry:
                 await update.message.reply_text(f"No pending winners to announce for Tier {tier}.")
-                # Optionally, show the last announced winner if no pending
                 last_announced_winner = session.query(Winner).join(LotteryDraw).filter(
                     LotteryDraw.tier == tier,
                     LotteryDraw.status == 'announced'
@@ -794,29 +737,26 @@ class LotteryBot:
                     await update.message.reply_text(f"Last announced winner for Tier {tier} was #{last_announced_winner.number}.")
                 return
             
-            # Mark the draw as 'announced'
             winner_entry.draw.status = 'announced'
             session.commit()
             
-            # Get user info for the winner
             user = session.query(User).get(winner_entry.user_id)
             username = f"@{user.username}" if user and user.username else f"User ID: {winner_entry.user_id}"
             
             message = (
                 f"🏆 **Tier {tier} Birr Winner** 🏆\n\n"
-                f"🎫 Winning Number: `{winner_entry.number}`\n" # Use backticks for monospace
+                f"🎫 Winning Number: `{winner_entry.number}`\n"
                 f"💰 Prize Amount: `{winner_entry.prize:.2f} Birr`\n"
                 f"👤 Winner: {username}\n\n"
                 f"Contact @YourAdminHandle (replace with actual admin handle) to claim your prize!"
             )
             
-            # Announce to channel
             if CHANNEL_ID:
                 try:
                     await self.application.bot.send_message(
                         chat_id=CHANNEL_ID,
                         text=message,
-                        parse_mode='Markdown' # Use Markdown for bold and monospace
+                        parse_mode='Markdown'
                     )
                 except Exception as e:
                     logging.error(f"Failed to announce winner to channel {CHANNEL_ID}: {e}")
@@ -908,7 +848,6 @@ class LotteryBot:
             with Session() as session:
                 user = session.query(User).filter_by(telegram_id=user_telegram_id).first()
                 if user:
-                    # Find and delete the specific reservation for this user, number, and tier
                     reservation_to_delete = session.query(ReservedNumber).filter_by(
                         user_id=user.id,
                         number=number_reserved,
@@ -922,7 +861,6 @@ class LotteryBot:
                         logging.info(f"No active reservation found for user {user_telegram_id} during cancellation (possibly expired or already processed).")
         
         await update.message.reply_text("❌ Purchase cancelled. You can start a new purchase with /buy.")
-        # Clear user_data for the conversation to ensure a clean slate
         context.user_data.clear() 
         return ConversationHandler.END
 
@@ -933,18 +871,14 @@ class LotteryBot:
 
 
 # --- Global instance of the bot for internal use (e.g., scheduled tasks) ---
-# This will be initialized only once when the `run` function is called by Gunicorn
 telegram_bot_instance: Optional[LotteryBot] = None
 
 # --- Main Application Start Point for Gunicorn ---
-# This function will be called by Gunicorn to start the WSGI application (Flask)
-# and also launch the Telegram bot in a background thread.
-def run(environ, start_response): # This function takes the standard WSGI arguments
+def run(environ, start_response):
     """
     Initializes the database, starts the Telegram bot in a background thread,
     and returns the Flask application for Gunicorn to serve.
     """
-    # Configure logging for the Gunicorn process
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO
@@ -952,20 +886,15 @@ def run(environ, start_response): # This function takes the standard WSGI argume
     
     logging.info("Starting Lottery Bot application...")
 
-    # Initialize database
     try:
         init_db()
     except Exception as e:
         logging.critical(f"Failed to initialize database during startup: {e}")
         pass 
     
-    # Start Telegram bot in a separate thread
     global telegram_bot_instance
-    if telegram_bot_instance is None: # Ensure bot is only initialized once per Gunicorn worker
+    if telegram_bot_instance is None:
         telegram_bot_instance = LotteryBot()
-        
-        # Initialize and start APScheduler tasks in the main thread (Gunicorn's thread)
-        # This resolves the event loop issue by separating the scheduler from the bot's async loop.
         telegram_bot_instance.init_schedulers()
 
         def start_bot_async_loop():
@@ -973,21 +902,17 @@ def run(environ, start_response): # This function takes the standard WSGI argume
             asyncio.set_event_loop(bot_loop)
             bot_loop.run_until_complete(telegram_bot_instance.run_polling_bot())
 
-        bot_thread = Thread(target=start_bot_async_loop, daemon=True) # daemon=True allows thread to exit with main app
+        bot_thread = Thread(target=start_bot_async_loop, daemon=True)
         bot_thread.start()
         
         logging.info("Telegram bot background thread started.")
     else:
         logging.info("Telegram bot already initialized for this worker.")
     
-    # Gunicorn expects a WSGI callable, which is Flask's `app` instance.
-    # We pass the arguments received by `run` directly to Flask's `app`.
     return app(environ, start_response)
 
 
 # --- Local Development/Testing Entry Point ---
-# This block is only executed when you run the script directly (e.g., `python main.py`).
-# It provides a way to run both Flask and the bot locally without Gunicorn.
 if __name__ == '__main__':
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -1002,14 +927,11 @@ if __name__ == '__main__':
         logging.critical(f"Failed to initialize database: {e}")
         exit(1)
         
-    # Start Flask health check server in a separate thread for local development
     flask_thread = Thread(target=lambda: app.run(host='0.0.0.0', port=5000))
     flask_thread.start()
     logging.info("Flask health check running on port 5000 (local dev mode)")
     
-    # Local bot instance
     local_bot_instance = LotteryBot()
-    # Initialize and start APScheduler for local dev instance
     local_bot_instance.init_schedulers()
 
     async def start_local_bot_async():
@@ -1019,6 +941,5 @@ if __name__ == '__main__':
     bot_thread.start()
     logging.info("Telegram bot polling started in background (local dev mode)")
     
-    # Keep the main thread alive for Flask in local dev.
     flask_thread.join()
     bot_thread.join()
