@@ -23,7 +23,6 @@ from telegram.error import TelegramError # Import for specific Telegram API erro
 # Import pytz for timezone-aware datetimes
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler # Import here for clarity
-# Removed 'text' from sqlalchemy import as it's for SQLAlchemy 1.x (as per your requirements.txt)
 from sqlalchemy import create_engine, Column, Integer, BigInteger, String, ForeignKey, DateTime, Boolean, Float
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
@@ -221,9 +220,10 @@ def clean_expired_reservations():
 
 
 # --- Flask Health Check ---
-app = Flask(__name__)
+# Renamed 'app' to 'run' to match Gunicorn's expected entry point 'main:run'
+run = Flask(__name__)
 
-@app.route('/health')
+@run.route('/health') # Changed decorator from @app.route
 def health_check():
     """
     Health check endpoint for the Flask application.
@@ -350,6 +350,10 @@ class LotteryBot:
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_unknown_message))
         self.application.add_handler(MessageHandler(filters.COMMAND, self._handle_unknown_command))
 
+    def start_polling_in_background(self):
+        """Starts the Telegram bot polling in a non-blocking way."""
+        logging.info("Starting Telegram Bot polling in a background thread...")
+        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
     # ============= ADMIN COMMANDS =============
     async def _enable_maintenance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -615,7 +619,7 @@ class LotteryBot:
                     user_id=user.id,
                     tier=tier
                 ).first()
-                
+
                 if existing_reservation:
                     # If they have an existing reservation for this tier, update it
                     existing_reservation.number = number
@@ -1329,37 +1333,43 @@ class LotteryBot:
                 "Please use one of the available commands like /buy, /numbers, /mytickets, or /progress."
             )
 
-    def run(self):
-        """Starts the bot and the Flask server."""
-        # Initialize the database
-        init_db()
+# Global flag to ensure one-time initialization
+_initialization_done = False
 
-        # Start APScheduler tasks in a separate thread if not already started
-        # This check prevents multiple schedulers from running if `run` is called multiple times
-        if not hasattr(self, '_scheduler_started') or not self._scheduler_started:
-            scheduler_thread = Thread(target=LotteryBot.init_schedulers_standalone)
-            scheduler_thread.daemon = True # Allow program to exit even if thread is running
-            scheduler_thread.start()
-            self._scheduler_started = True
+def initialize_application_components():
+    global _initialization_done
+    if _initialization_done:
+        return
 
-        # Start the Flask app in a separate thread for health checks
-        flask_thread = Thread(target=lambda: app.run(host='0.0.0.0', port=os.getenv("PORT", 8080), debug=False, use_reloader=False))
-        flask_thread.daemon = True # Flask server runs in background
-        flask_thread.start()
-        logging.info(f"Flask health check server started on port {os.getenv('PORT', 8080)}")
+    logging.info("Performing one-time application initialization...")
+    init_db()
+    LotteryBot.init_schedulers_standalone() # Starts APScheduler in a new thread
+    _initialization_done = True
 
-        # Start the Telegram bot polling
-        logging.info("Starting Telegram Bot polling...")
-        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
-
+# This function will be called when the script is imported (e.g., by Gunicorn)
+# or when it's run directly.
+initialize_application_components()
 
 if __name__ == '__main__':
-    # Configure logging
+    # Configure logging for direct execution
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO
     )
     
-    # Run the bot
-    bot = LotteryBot()
-    bot.run()
+    # Initialize the bot instance
+    bot_instance = LotteryBot()
+
+    # Start the bot's polling loop in a separate daemon thread
+    # This prevents the bot's polling from blocking the main thread,
+    # which Gunicorn uses to serve the 'run' (Flask) app.
+    bot_thread = Thread(target=bot_instance.start_polling_in_background)
+    bot_thread.daemon = True # Daemon threads exit when the main program exits
+    bot_thread.start()
+
+    logging.info("Telegram Bot polling started in a background thread.")
+    logging.info("Flask application 'run' is ready to be served by Gunicorn.")
+
+    # In a Gunicorn environment, the 'run' (Flask app) object itself is served.
+    # We do not call run.run() here because Gunicorn manages the web server lifecycle.
+    # The script will effectively stay alive due to the background bot thread.
