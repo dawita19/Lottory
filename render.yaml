@@ -11,7 +11,7 @@ services:
       pip install --upgrade pip
       pip install -r requirements.txt
       python -c "from main import init_db; init_db()"
-    startCommand: gunicorn --bind :$PORT --workers 1 --threads 2 --timeout 0 main:bot.run
+    startCommand: gunicorn --bind :$PORT --workers 1 --threads 2 --timeout 0 main:app
     envVars:
       - key: BOT_TOKEN
         sync: false
@@ -19,6 +19,8 @@ services:
         sync: false
       - key: CHANNEL_ID
         sync: false
+      - key: DATABASE_URL
+        value: sqlite:////data/lottery_bot.db
     healthCheckPath: /health
     disk:
       name: lottery_data
