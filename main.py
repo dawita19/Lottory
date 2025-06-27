@@ -22,7 +22,8 @@ from telegram.error import TelegramError # Import for specific Telegram API erro
 # Import pytz for timezone-aware datetimes
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler # Import here for clarity
-from sqlalchemy import create_engine, Column, Integer, BigInteger, String, ForeignKey, DateTime, Boolean, Float, text
+# Removed 'text' from sqlalchemy import as it's for SQLAlchemy 2.0+
+from sqlalchemy import create_engine, Column, Integer, BigInteger, String, ForeignKey, DateTime, Boolean, Float
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from sqlalchemy.sql import func
@@ -228,10 +229,9 @@ def health_check():
     Checks database connectivity and bot maintenance mode.
     """
     try:
-        # Test database connection robustly
+        # For SQLAlchemy 1.x, use connection.execute() directly for raw SQL
         with engine.connect() as connection:
-            # Execute a simple query to ensure the connection is active
-            connection.scalar(text("SELECT 1"))
+            connection.execute("SELECT 1") # Removed text() wrapper for SQLAlchemy 1.x compatibility
         
         status = "MAINTENANCE" if MAINTENANCE else "OK"
         status_code = 503 if MAINTENANCE else 200
@@ -826,7 +826,7 @@ class LotteryBot:
                                 parse_mode='HTML'
                             )
                         except TelegramError as e:
-                            loging.error(f"Failed to notify user {user.telegram_id} after approval: {e}")
+                            logging.error(f"Failed to notify user {user.telegram_id} after approval: {e}")
                     else:
                         logging.error(f"User {ticket.user_id} not found to notify after approval.")
                     
