@@ -54,7 +54,7 @@ MAINTENANCE = os.getenv("MAINTENANCE_MODE", "false").lower() == "true"
 
 # --- ACTION REQUIRED: CHANGE THIS TO YOUR ACTUAL ADMIN CONTACT HANDLE ---
 # This handle will be displayed to users in winner announcements for claiming prizes.
-ADMIN_CONTACT_HANDLE = "@YourAdminHandle" # e.g., "@MyLotteryAdmin" or "@MyLotterySupportGroup"
+ADMIN_CONTACT_HANDLE = "@lij_hailemichael" # e.g., "@MyLotteryAdmin" or "@MyLotterySupportGroup"
 
 # Conversation states
 SELECT_TIER, SELECT_NUMBER, PAYMENT_PROOF = range(3)
