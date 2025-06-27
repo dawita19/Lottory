@@ -2,7 +2,6 @@ import os
 import logging
 import asyncio
 import random
-import argparse
 from threading import Thread
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Set
@@ -152,12 +151,8 @@ def clean_expired_reservations():
         session.query(ReservedNumber).filter(ReservedNumber.reserved_at < expiry_time).delete()
         session.commit()
 
-# --- Flask App ---
+# --- Flask Health Check ---
 app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return jsonify({"status": "OK", "service": "Lottery Bot"})
 
 @app.route('/health')
 def health_check():
@@ -185,7 +180,6 @@ class LotteryBot:
         self.application = ApplicationBuilder().token(BOT_TOKEN).build()
         self.user_activity = {}
         self._setup_handlers()
-        self._init_schedulers()
 
     def _validate_config(self):
         if not BOT_TOKEN:
@@ -193,12 +187,14 @@ class LotteryBot:
         if not ADMIN_IDS:
             logging.warning("No ADMIN_IDS configured - admin commands disabled")
 
-    def _init_schedulers(self):
+    def init_schedulers(self):
+        """Initialize scheduled tasks"""
         from apscheduler.schedulers.background import BackgroundScheduler
         scheduler = BackgroundScheduler()
         scheduler.add_job(backup_db, 'interval', hours=6)
         scheduler.add_job(clean_expired_reservations, 'interval', hours=1)
         scheduler.start()
+        logging.info("APScheduler background tasks started.")
 
     def _check_spam(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -835,27 +831,47 @@ class LotteryBot:
         logging.info("Starting Telegram bot polling...")
         await self.application.run_polling(drop_pending_updates=True)
 
-# --- Main Execution ---
-def run_bot():
-    """Run the Telegram bot in a separate thread"""
-    logging.info("Initializing bot services...")
-    init_db()
-    bot = LotteryBot()
-    
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    try:
-        loop.run_until_complete(bot.run_polling_bot())
-    except KeyboardInterrupt:
-        pass
-    finally:
-        loop.close()
+# --- Global instance of the bot for internal use ---
+telegram_bot_instance: Optional[LotteryBot] = None
 
-def run_web():
-    """Run the Flask web service"""
-    logging.info("Starting Flask web service...")
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
+# --- Main Application Start Point for Gunicorn ---
+def run(environ, start_response):
+    """
+    Initializes the database, starts the Telegram bot in a background thread,
+    and returns the Flask application for Gunicorn to serve.
+    """
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO
+    )
+    
+    logging.info("Starting Lottery Bot application...")
+
+    try:
+        init_db()
+    except Exception as e:
+        logging.critical(f"Failed to initialize database during startup: {e}")
+        pass 
+    
+    global telegram_bot_instance
+    if telegram_bot_instance is None:
+        telegram_bot_instance = LotteryBot()
+        
+        telegram_bot_instance.init_schedulers()
+
+        def start_bot_async_loop():
+            bot_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(bot_loop)
+            bot_loop.run_until_complete(telegram_bot_instance.run_polling_bot())
+
+        bot_thread = Thread(target=start_bot_async_loop, daemon=True)
+        bot_thread.start()
+        
+        logging.info("Telegram bot background thread started.")
+    else:
+        logging.info("Telegram bot already initialized for this worker.")
+    
+    return app(environ, start_response)
 
 if __name__ == '__main__':
     logging.basicConfig(
@@ -863,45 +879,27 @@ if __name__ == '__main__':
         level=logging.INFO
     )
     
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--worker', action='store_true', help='Run in worker mode (Telegram bot only)')
-    parser.add_argument('--web', action='store_true', help='Run in web mode (Flask only)')
-    args = parser.parse_args()
+    logging.info("Running application in local development mode.")
 
     try:
         init_db()
     except Exception as e:
         logging.critical(f"Failed to initialize database: {e}")
         exit(1)
-
-    if args.worker:
-        logging.info("Running in worker mode (Telegram bot only)")
-        run_bot()
-    elif args.web:
-        logging.info("Running in web mode (Flask only)")
-        run_web()
-    else:
-        logging.info("Running in development mode (both Flask and Telegram bot)")
-        # Start Flask in a separate thread
-        flask_thread = Thread(target=run_web)
-        flask_thread.daemon = True
-        flask_thread.start()
         
-        # Run bot in main thread
-        run_bot()
-
-# --- Main Application Start Point for Gunicorn ---
-def run(environ, start_response): # This function takes the standard WSGI arguments
-    """
-    Initializes the database, starts the Telegram bot in a background thread,
-    and returns the Flask application for Gunicorn to serve.
-    """
-    try:
-        init_db()
-        bot_thread = Thread(target=run_bot)
-        bot_thread.daemon = True
-        bot_thread.start()
-    except Exception as e:
-        logging.critical(f"Failed to initialize services: {e}")
+    flask_thread = Thread(target=lambda: app.run(host='0.0.0.0', port=5000))
+    flask_thread.start()
+    logging.info("Flask health check running on port 5000 (local dev mode)")
     
-    return app(environ, start_response)
+    local_bot_instance = LotteryBot()
+    local_bot_instance.init_schedulers()
+
+    async def start_local_bot_async():
+        await local_bot_instance.run_polling_bot()
+    
+    bot_thread = Thread(target=lambda: asyncio.run(start_local_bot_async()))
+    bot_thread.start()
+    logging.info("Telegram bot polling started in background (local dev mode)")
+    
+    flask_thread.join()
+    bot_thread.join()
