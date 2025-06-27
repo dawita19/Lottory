@@ -99,7 +99,7 @@ def init_db():
         # Only create backup dir if not using Render's read-only filesystem
         if not DATABASE_URL.startswith('postgres'):
             os.makedirs(BACKUP_DIR, exist_ok=True)
-        
+            
         Base.metadata.create_all(engine)
         
         # Initialize ticket tiers if they don't exist
@@ -413,8 +413,8 @@ class LotteryBot:
                     chat_id=admin_id,
                     photo=photo_id,
                     caption=f"🔄 Payment Proof\n\nUser: @{update.effective_user.username}\n"
-                           f"Number: #{number}\nTier: {tier} Birr\n\n"
-                           f"Approve: /approve {number} {tier}"
+                                   f"Number: #{number}\nTier: {tier} Birr\n\n"
+                                   f"Approve: /approve {number} {tier}"
                 )
         
         await update.message.reply_text(
@@ -473,7 +473,8 @@ class LotteryBot:
                 user = session.query(User).get(ticket.user_id)
                 await self.application.bot.send_message(
                     chat_id=user.telegram_id,
-                    text=f"🎉 <b>Payment Approved!</b>\n\nTicket #{number} confirmed!"
+                    text=f"🎉 <b>Payment Approved!</b>\n\nTicket #{number} confirmed!",
+                    parse_mode='HTML'
                 )
                 
                 await update.message.reply_text(f"✅ Approved ticket #{number}")
@@ -609,10 +610,10 @@ class LotteryBot:
             await self.application.bot.send_message(
                 chat_id=admin_id,
                 text=f"🎰 Automatic Draw Complete (Tier {tier} Birr)\n\n"
-                     f"Winner: User {winner.user_id}\n"
-                     f"Number: #{winner.number}\n"
-                     f"Prize: {prize:.2f} Birr\n\n"
-                     f"Use /announce_{tier} to publish"
+                             f"Winner: User {winner.user_id}\n"
+                             f"Number: #{winner.number}\n"
+                             f"Prize: {prize:.2f} Birr\n\n"
+                             f"Use /announce_{tier} to publish"
             )
 
     async def _manual_draw(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -752,44 +753,75 @@ class LotteryBot:
         return ConversationHandler.END
 
     async def run(self):
-        """Start the bot"""
+        """Start the bot's polling mechanism"""
         await self.application.run_polling()
 
-# --- Main Application ---
-def run_bot():
-    """Run the Telegram bot in a separate thread"""
+# --- Main Application Start Point for Gunicorn ---
+# This function will be called by Gunicorn
+def run():
+    """Initializes and runs the bot alongside the Flask app."""
     # Configure logging
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO
     )
     
-    # Verify required configuration
-    if not BOT_TOKEN:
-        logging.critical("TELEGRAM_BOT_TOKEN environment variable required!")
-        exit(1)
-    
     # Initialize database
     try:
         init_db()
     except Exception as e:
         logging.critical(f"Failed to initialize database: {e}")
-        exit(1)
+        # In a production environment, you might want to raise here
+        # or exit, as the app won't function without a DB.
+        # For a WSGI server, raising an exception will cause it to fail startup.
+        # For now, let's just log and continue, but this needs careful consideration.
+        pass # Allow Flask app to start even if DB init fails, so health check can show ERROR
     
-    # Start Telegram bot
-    try:
-        bot = LotteryBot()
-        asyncio.run(bot.run())
-    except Exception as e:
-        logging.critical(f"Bot failed: {e}")
-        exit(1)
+    # Start Telegram bot in a separate thread (it needs an asyncio loop)
+    # Gunicorn is not async, so we run the bot in a dedicated thread.
+    telegram_bot_instance = LotteryBot()
+    # Create a new event loop for the bot's thread
+    bot_loop = asyncio.new_event_loop()
+    
+    def start_bot_loop():
+        asyncio.set_event_loop(bot_loop)
+        bot_loop.run_until_complete(telegram_bot_instance.run())
 
-if __name__ == '__main__':
-    # Start Flask health check in main thread
-    Thread(target=lambda: app.run(host='0.0.0.0', port=5000)).start()
-    logging.info("Flask health check running on port 5000")
-    
-    # Start bot in a separate thread
-    bot_thread = Thread(target=run_bot)
+    bot_thread = Thread(target=start_bot_loop)
     bot_thread.start()
+    
+    logging.info("Telegram bot started in background thread.")
+    
+    return app # Gunicorn expects the WSGI callable to be returned
+
+# If you still want to run it locally with `python main.py`, keep the __name__ == '__main__' block
+if __name__ == '__main__':
+    # This block is only for local development/testing
+    # In a production environment with Gunicorn, this block is not executed directly.
+    # The 'run' function above will be the entry point for Gunicorn.
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO
+    )
+    
+    try:
+        init_db()
+    except Exception as e:
+        logging.critical(f"Failed to initialize database: {e}")
+        exit(1)
+        
+    # Start Flask health check in main thread for local run
+    flask_thread = Thread(target=lambda: app.run(host='0.0.0.0', port=5000))
+    flask_thread.start()
+    logging.info("Flask health check running on port 5000 (local mode)")
+    
+    # Start bot in a separate thread for local run
+    bot = LotteryBot()
+    async def start_bot_async():
+        await bot.run()
+    
+    bot_thread = Thread(target=lambda: asyncio.run(start_bot_async()))
+    bot_thread.start()
+    
+    flask_thread.join() # Keep main thread alive for Flask in local dev
     bot_thread.join()
