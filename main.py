@@ -302,7 +302,7 @@ class LotteryBot:
         return False # Continue processing
 
     def _setup_handlers(self):
-        """Configures all bot command and message handlers."""
+        """Confgures all bot command and message handlers."""
         # Anti-spam and maintenance checks must be at the highest group (lowest number) to run first.
         self.application.add_handler(TypeHandler(Update, self._check_spam), group=-1)
         self.application.add_handler(TypeHandler(Update, self._check_maintenance), group=-1)
@@ -804,7 +804,7 @@ class LotteryBot:
                     settings = session.query(LotterySettings).filter_by(tier=tier).first()
                     if settings:
                         settings.sold_tickets += 1
-                        settings.prize_pool += tier * 0.5 # 50% of ticket price goes to prize pool
+                        settings.prize_pool += tier * 0.5
                     else:
                         logging.warning(f"LotterySettings for tier {tier} not found. Prize pool not updated.")
                     
