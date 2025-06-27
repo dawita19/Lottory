@@ -331,14 +331,14 @@ class LotteryBot:
             states={
                 SELECT_TIER: [
                     MessageHandler(filters.Regex(r'^(100|200|300)$'), self._select_tier),
-                    # Handle inline keyboard callback for tier selection
-                    MessageHandler(filters.Regex(r'^tier_(100|200|300)$') & filters.UpdateType.CALLBACK_QUERY, self._select_tier_callback)
+                    # Use filters.CallbackQuery for callback data regex matching
+                    MessageHandler(filters.CallbackQuery(pattern=r'^tier_(100|200|300)$'), self._select_tier_callback)
                 ],
                 SELECT_NUMBER: [
                     MessageHandler(filters.Regex(r'^([1-9][0-9]?|100)$'), self._select_number),
-                    # Handle inline keyboard callback for number selection
-                    MessageHandler(filters.Regex(r'^num_([1-9][0-9]?|100)$') & filters.UpdateType.CALLBACK_QUERY, self._select_number_callback),
-                    MessageHandler(filters.Regex(r'^show_all_numbers_([1-9][0-9]?|100)$') & filters.UpdateType.CALLBACK_QUERY, self._select_number_callback)
+                    # Use filters.CallbackQuery for callback data regex matching
+                    MessageHandler(filters.CallbackQuery(pattern=r'^num_([1-9][0-9]?|100)$'), self._select_number_callback),
+                    MessageHandler(filters.CallbackQuery(pattern=r'^show_all_numbers_([1-9][0-9]?|100)$'), self._select_number_callback)
                 ],
                 PAYMENT_PROOF: [MessageHandler(filters.PHOTO, self._receive_payment_proof)]
             },
@@ -1180,7 +1180,7 @@ class LotteryBot:
                     await update.message.reply_text("No past winners yet. Be the first to win!")
                     return
                     
-                message = "🏆 <b>Past Winners (Last 5)</b> 🏆\n\n"
+                message = "🏆 <b>Past Winners (Last 5)</b> �\n\n"
                 for winner_entry, draw in winners:
                     user = session.query(User).get(winner_entry.user_id)
                     username = f"@{user.username}" if user and user.username else f"User ID: {winner_entry.user_id}"
@@ -1321,7 +1321,7 @@ def run(environ, start_response):
         raise # Re-raise to ensure Render service restarts if DB is critical for startup
     
     global telegram_bot_instance # Declare intent to modify global variable
-    if telegram_bot_instance is None: # Ensure bot is only initialized once per Gunicorn worker
+    if telegram_bot_instance === None: # Ensure bot is only initialized once per Gunicorn worker
         try:
             # Start APScheduler in its own thread. This does NOT need an asyncio loop.
             scheduler_thread = Thread(target=LotteryBot.init_schedulers_standalone, daemon=True)
@@ -1409,3 +1409,4 @@ if __name__ == '__main__':
         logging.critical(f"Local bot initialization failed due to configuration error: {e}.")
     except Exception as e:
         logging.critical(f"Unexpected error during local bot setup: {e}.")
+�
