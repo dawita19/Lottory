@@ -52,7 +52,7 @@ BACKUP_DIR = os.getenv("BACKUP_DIR", "./backups")
 MAINTENANCE = os.getenv("MAINTENANCE_MODE", "false").lower() == "true"
 
 # Define a contact admin handle for users (can be a bot, group, or user)
-ADMIN_CONTACT_HANDLE = "@YourAdminHandle" # !!! IMPORTANT: CHANGE THIS TO YOUR ACTUAL ADMIN CONTACT !!!
+ADMIN_CONTACT_HANDLE = "@lij_hailemichael" # !!! IMPORTANT: CHANGE THIS TO YOUR ACTUAL ADMIN CONTACT !!!
 
 # Conversation states
 SELECT_TIER, SELECT_NUMBER, PAYMENT_PROOF = range(3)
