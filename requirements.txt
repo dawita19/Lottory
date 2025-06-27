@@ -5,4 +5,5 @@ APScheduler==3.10.4 # Changed to a stable version
 gunicorn==20.1.0
 pytz==2023.3
 SQLAlchemy==1.4.39
+psycopg2-binary # Recommended for PostgreSQL database connection
 
