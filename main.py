@@ -16,23 +16,27 @@ from telegram.ext import (
     ContextTypes,
     filters,
     TypeHandler,
-    CallbackQueryHandler # Added CallbackQueryHandler import
+    CallbackQueryHandler
 )
-from telegram.error import TelegramError # Import for specific Telegram API error handling
+from telegram.error import TelegramError
 
-# Import pytz for timezone-aware datetimes
 import pytz
-from apscheduler.schedulers.background import BackgroundScheduler # Import here for clarity
+from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import create_engine, Column, Integer, BigInteger, String, ForeignKey, DateTime, Boolean, Float
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from sqlalchemy.sql import func
 
+# --- Configure Logging Early ---
+# Ensure logging is set up before any other parts of the application try to log
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+
 # --- Configuration & Environment Variables ---
-# Centralized loading of environment variables with clearer error handling
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./lottery_bot.db")
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-# Safely parse ADMIN_IDS, ensuring it's a list of integers
 ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "")
 ADMIN_IDS = []
 if ADMIN_IDS_STR:
@@ -52,15 +56,12 @@ if CHANNEL_ID_STR:
 BACKUP_DIR = os.getenv("BACKUP_DIR", "./backups")
 MAINTENANCE = os.getenv("MAINTENANCE_MODE", "false").lower() == "true"
 
-# --- ADMIN CONTACT HANDLE ---
-# This handle will be displayed to users in winner announcements for claiming prizes.
 ADMIN_CONTACT_HANDLE = "@lij_hailemichael" 
 
 # Conversation states
 SELECT_TIER, SELECT_NUMBER, PAYMENT_PROOF = range(3)
 
 # --- Database Setup ---
-# SQLAlchemy setup
 engine = create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
 Base = declarative_base()
@@ -71,7 +72,7 @@ class User(Base):
     id = Column(Integer, primary_key=True)
     telegram_id = Column(BigInteger, unique=True, nullable=False)
     username = Column(String(255))
-    balance = Column(Integer, default=0) # Consider making this BigInteger if balances can grow very large
+    balance = Column(Integer, default=0)
     tickets = relationship("Ticket", back_populates="user")
 
 class Ticket(Base):
@@ -90,7 +91,7 @@ class LotteryDraw(Base):
     winning_number = Column(Integer)
     tier = Column(Integer)
     drawn_at = Column(DateTime, default=lambda: datetime.now(pytz.utc))
-    status = Column(String(20), default='pending')  # pending, announced
+    status = Column(String(20), default='pending')
 
 class Winner(Base):
     __tablename__ = 'winners'
@@ -119,12 +120,8 @@ class ReservedNumber(Base):
     photo_id = Column(String(255))
 
 def init_db():
-    """
-    Initializes the database by creating all defined tables
-    and ensures initial lottery tiers settings are present.
-    """
+    """Initializes the database and ensures default tiers."""
     try:
-        # Create backup directory only if using SQLite and it's not a read-only environment
         if DATABASE_URL.startswith('sqlite:'):
             if not os.path.exists(BACKUP_DIR):
                 try:
@@ -134,28 +131,23 @@ def init_db():
             
         Base.metadata.create_all(engine)
         
-        # Initialize ticket tiers if they don't exist
         with Session() as session:
             for tier_value in [100, 200, 300]:
                 if not session.query(LotterySettings).filter_by(tier=tier_value).first():
-                    session.add(LotterySettings(tier=tier_value, total_tickets=100)) # Default to 100 tickets
-                session.commit()
+                    session.add(LotterySettings(tier=tier_value, total_tickets=100))
+            session.commit()
             
         logging.info("Database initialized successfully and default tiers ensured.")
     except OperationalError as e:
         logging.critical(f"Database connection failed during initialization: {e}")
-        raise # Re-raise to prevent app from starting without DB
+        raise
     except Exception as e:
         logging.critical(f"Unhandled error during database initialization: {e}")
         raise
 
 # --- Backup System ---
 def backup_db():
-    """
-    Creates a timestamped database backup.
-    Skips for PostgreSQL as it's typically managed by the provider.
-    For SQLite, copies the database file.
-    """
+    """Creates a timestamped database backup."""
     try:
         if DATABASE_URL.startswith('postgres'):
             logging.info("Skipping backup for PostgreSQL database (managed by cloud provider).")
@@ -170,7 +162,6 @@ def backup_db():
             logging.warning(f"SQLite database file not found at {db_file}. Cannot backup.")
             return
 
-        # Ensure backup directory exists and is writable
         if not os.path.exists(BACKUP_DIR):
             try:
                 os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -184,7 +175,7 @@ def backup_db():
         import shutil
         shutil.copy2(db_file, backup_path)
         logging.info(f"Database backed up to {backup_path}")
-        clean_old_backups() # Clean up old backups after successful new backup
+        clean_old_backups()
     except Exception as e:
         logging.error(f"Backup failed: {e}")
 
@@ -192,11 +183,11 @@ def clean_old_backups(keep_last=5):
     """Rotates backup files, keeping only the most recent 'keep_last' backups."""
     try:
         if not os.path.exists(BACKUP_DIR):
-            return # No backup directory means nothing to clean
+            return
 
         backups = sorted([f for f in os.listdir(BACKUP_DIR) if f.startswith("backup_") and f.endswith(".db")])
         if len(backups) <= keep_last:
-            return # Not enough backups to clean
+            return
 
         for old_backup in backups[:-keep_last]:
             os.remove(os.path.join(BACKUP_DIR, old_backup))
@@ -227,16 +218,12 @@ def home():
     """A simple home page for the Flask application."""
     return "Lottery Bot Service is running. Use the Telegram bot to interact!"
 
-@run.route('/health') # Changed decorator from @app.route
+@run.route('/health')
 def health_check():
-    """
-    Health check endpoint for the Flask application.
-    Checks database connectivity and bot maintenance mode.
-    """
+    """Health check endpoint for the Flask application."""
     try:
-        # For SQLAlchemy 1.x, use connection.execute() directly for raw SQL
         with engine.connect() as connection:
-            connection.execute("SELECT 1") # Corrected for SQLAlchemy 1.x compatibility
+            connection.execute("SELECT 1")
         
         status = "MAINTENANCE" if MAINTENANCE else "OK"
         status_code = 503 if MAINTENANCE else 200
@@ -256,11 +243,11 @@ def health_check():
 
 # --- Lottery Bot Implementation ---
 class LotteryBot:
-    def __init__(self): # Simplified init: always builds its own application
+    def __init__(self):
         self._validate_config()
-        self.application = ApplicationBuilder().token(BOT_TOKEN).build() # Build here
+        self.application = ApplicationBuilder().token(BOT_TOKEN).build()
         
-        self.user_activity = {} # For anti-spam
+        self.user_activity = {}
         self._setup_handlers()
 
     def _validate_config(self):
@@ -270,14 +257,12 @@ class LotteryBot:
             raise ValueError("TELEGRAM_BOT_TOKEN environment variable required")
         if not ADMIN_IDS:
             logging.warning("ADMIN_IDS environment variable is not set or empty. Admin commands will be disabled.")
-        if CHANNEL_ID is None: # Use `is None` because CHANNEL_ID could be 0 (a valid chat ID)
+        if CHANNEL_ID is None:
             logging.warning("CHANNEL_ID environment variable is not set or invalid. Channel announcements will be disabled.")
 
-    # This is a standalone function for APScheduler, called by the main run function.
     def init_schedulers_standalone():
         """Initializes and starts APScheduler background tasks."""
         try:
-            # Initialize BackgroundScheduler with pytz.utc timezone explicitly
             scheduler = BackgroundScheduler(timezone=pytz.utc) 
             scheduler.add_job(backup_db, 'interval', hours=6, id='db_backup_job')
             scheduler.add_job(clean_expired_reservations, 'interval', hours=1, id='clean_reservations_job')
@@ -295,24 +280,22 @@ class LotteryBot:
         user_id = update.effective_user.id
         now = datetime.now().timestamp()
         if user_id in self.user_activity and now - self.user_activity[user_id] < 2:
-            return True # Indicate that the event was handled and should stop processing
+            return True
         self.user_activity[user_id] = now
-        return False # Continue processing the event
+        return False
 
     async def _check_maintenance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Checks if the bot is in maintenance mode and informs non-admin users."""
         if MAINTENANCE and not self._is_admin(update.effective_user.id):
             await update.message.reply_text("🔧 The bot is currently under maintenance. Please try again later.")
-            return True # Indicate that the event was handled
-        return False # Continue processing
+            return True
+        return False
 
     def _setup_handlers(self):
-        """Confgures all bot command and message handlers."""
-        # Anti-spam and maintenance checks must be at the highest group (lowest number) to run first.
+        """Configures all bot command and message handlers."""
         self.application.add_handler(TypeHandler(Update, self._check_spam), group=-1)
         self.application.add_handler(TypeHandler(Update, self._check_maintenance), group=-1)
         
-        # Admin commands
         self.application.add_handler(CommandHandler("maintenance_on", self._enable_maintenance))
         self.application.add_handler(CommandHandler("maintenance_off", self._disable_maintenance))
         self.application.add_handler(CommandHandler("approve", self._approve_payment))
@@ -323,25 +306,21 @@ class LotteryBot:
         self.application.add_handler(CommandHandler("announce_200", lambda u,c: self._announce_winners(u,c,200)))
         self.application.add_handler(CommandHandler("announce_300", lambda u,c: self._announce_winners(u,c,300)))
         
-        # User commands
         self.application.add_handler(CommandHandler("start", self._start))
         self.application.add_handler(CommandHandler("numbers", self._available_numbers))
         self.application.add_handler(CommandHandler("mytickets", self._show_user_tickets))
         self.application.add_handler(CommandHandler("progress", self._show_progress))
         self.application.add_handler(CommandHandler("winners", self._show_past_winners))
         
-        # Purchase conversation
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler('buy', self._start_purchase)],
             states={
                 SELECT_TIER: [
                     MessageHandler(filters.Regex(r'^(100|200|300)$'), self._select_tier),
-                    # Corrected: Use CallbackQueryHandler for callback data
                     CallbackQueryHandler(pattern=r'^tier_(100|200|300)$', callback=self._select_tier_callback)
                 ],
                 SELECT_NUMBER: [
                     MessageHandler(filters.Regex(r'^([1-9][0-9]?|100)$'), self._select_number),
-                    # Corrected: Use CallbackQueryHandler for callback data
                     CallbackQueryHandler(pattern=r'^num_([1-9][0-9]?|100)$', callback=self._select_number_callback),
                     CallbackQueryHandler(pattern=r'^show_all_numbers_([1-9][0-9]?|100)$', callback=self._select_number_callback)
                 ],
@@ -350,14 +329,17 @@ class LotteryBot:
             fallbacks=[CommandHandler('cancel', self._cancel_purchase)]
         )
         self.application.add_handler(conv_handler)
-        # Add a catch-all for unknown commands/messages to provide user feedback
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_unknown_message))
         self.application.add_handler(MessageHandler(filters.COMMAND, self._handle_unknown_command))
 
     def start_polling_in_background(self):
         """Starts the Telegram bot polling in a non-blocking way."""
         logging.info("Starting Telegram Bot polling in a background thread...")
-        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+        try:
+            self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+        except Exception as e:
+            logging.critical(f"Telegram bot polling failed: {e}", exc_info=True)
+
 
     # ============= ADMIN COMMANDS =============
     async def _enable_maintenance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -659,7 +641,7 @@ class LotteryBot:
                 return ConversationHandler.END
             except TelegramError as e:
                 logging.error(f"Telegram API error after number selection: {e}")
-                return ConversationHandler.END # End conversation due to communication issue
+                return ConversationHandler.END
 
 
     async def _select_number(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1337,43 +1319,50 @@ class LotteryBot:
                 "Please use one of the available commands like /buy, /numbers, /mytickets, or /progress."
             )
 
+# Global variable to hold the bot instance
+lottery_bot_instance: Optional[LotteryBot] = None
+
 # Global flag to ensure one-time initialization
 _initialization_done = False
 
 def initialize_application_components():
-    global _initialization_done
+    global _initialization_done, lottery_bot_instance
     if _initialization_done:
         return
 
     logging.info("Performing one-time application initialization...")
+    
+    # Initialize DB and APScheduler
     init_db()
     LotteryBot.init_schedulers_standalone() # Starts APScheduler in a new thread
-    _initialization_done = True
 
-# This function will be called when the script is imported (e.g., by Gunicorn)
-# or when it's run directly.
+    # Initialize and start the Telegram bot in a background thread
+    # This must happen outside if __name__ == '__main__': for Gunicorn deployments
+    try:
+        lottery_bot_instance = LotteryBot()
+        bot_thread = Thread(target=lottery_bot_instance.start_polling_in_background)
+        bot_thread.daemon = True # Daemon threads exit when the main program exits
+        bot_thread.start()
+        logging.info("Telegram Bot polling started in a background thread.")
+    except Exception as e:
+        logging.critical(f"Failed to start Telegram Bot: {e}", exc_info=True)
+        # Re-raise to prevent the web service from starting if the bot critical fails
+        raise
+
+    _initialization_done = True
+    logging.info("Application components initialized.")
+
+
+# Call initialization function directly so it runs when Gunicorn imports main.py
 initialize_application_components()
 
 if __name__ == '__main__':
-    # Configure logging for direct execution
-    logging.basicConfig(
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        level=logging.INFO
-    )
-    
-    # Initialize the bot instance
-    bot_instance = LotteryBot()
-
-    # Start the bot's polling loop in a separate daemon thread
-    # This prevents the bot's polling from blocking the main thread,
-    # which Gunicorn uses to serve the 'run' (Flask) app.
-    bot_thread = Thread(target=bot_instance.start_polling_in_background)
-    bot_thread.daemon = True # Daemon threads exit when the main program exits
-    bot_thread.start()
-
-    logging.info("Telegram Bot polling started in a background thread.")
-    logging.info("Flask application 'run' is ready to be served by Gunicorn.")
-
+    # This block only runs when script is executed directly (e.g., `python main.py`)
     # In a Gunicorn environment, the 'run' (Flask app) object itself is served.
-    # We do not call run.run() here because Gunicorn manages the web server lifecycle.
-    # The script will effectively stay alive due to the background bot thread.
+    # The script will effectively stay alive due to the background bot thread started above.
+    logging.info("Running main.py directly for development/testing.")
+    logging.info("Flask application 'run' is ready to be served by Gunicorn if deployed.")
+    # For local development, you might want to run Flask's dev server if no Gunicorn is used.
+    # For this setup, simply having the bot thread running is usually sufficient to keep it alive.
+    # If you need to run the Flask dev server locally, you'd add: run.run(debug=True)
+    # However, for deployment, Gunicorn handles it.
