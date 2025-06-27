@@ -161,7 +161,7 @@ def health_check():
     try:
         with Session() as session:
             session.execute("SELECT 1")
-        
+            
         return jsonify(
             status="MAINTENANCE" if MAINTENANCE else "OK",
             database="connected",
@@ -379,7 +379,7 @@ class LotteryBot:
         if not self._is_number_available(number, tier):
             await query.edit_message_text("❌ Number already taken or no longer available! Please choose another number or tier.")
             return SELECT_NUMBER
-        
+            
         with Session() as session:
             user = session.query(User).filter_by(telegram_id=user_id).first()
             if not user:
@@ -405,7 +405,7 @@ class LotteryBot:
                 logging.info(f"User {user_id} reserved number {number} for tier {tier}")
             
             session.commit()
-        
+            
         context.user_data['number'] = number
         
         await query.edit_message_text(
@@ -453,8 +453,8 @@ class LotteryBot:
                         chat_id=admin_id,
                         photo=photo_id,
                         caption=(f"🔄 Payment Proof\n\nUser: @{update.effective_user.username or user_id}\n"
-                               f"Number: #{number}\nTier: {tier} Birr\n\n"
-                               f"Approve: /approve {number} {tier}")
+                                   f"Number: #{number}\nTier: {tier} Birr\n\n"
+                                   f"Approve: /approve {number} {tier}")
                     )
                 except Exception as e:
                     logging.error(f"Failed to send payment proof to admin {admin_id}: {e}")
@@ -661,6 +661,7 @@ class LotteryBot:
             tier=tier,
             status='pending',
             drawn_at=datetime.now(pytz.utc)
+        )
         session.add(draw)
         session.flush()
         
@@ -684,10 +685,10 @@ class LotteryBot:
                 await self.application.bot.send_message(
                     chat_id=admin_id,
                     text=(f"🎰 Automatic Draw Complete (Tier {tier} Birr)\n\n"
-                          f"Winning Number: #{winner_ticket.number}\n"
-                          f"Winner User ID: {winner_ticket.user_id}\n"
-                          f"Prize: {prize:.2f} Birr\n\n"
-                          f"<b>Please use /announce_{tier} to publish this winner to the channel.</b>"),
+                                f"Winning Number: #{winner_ticket.number}\n"
+                                f"Winner User ID: {winner_ticket.user_id}\n"
+                                f"Prize: {prize:.2f} Birr\n\n"
+                                f"<b>Please use /announce_{tier} to publish this winner to the channel.</b>"),
                     parse_mode='HTML'
                 )
             except Exception as e:
@@ -848,6 +849,7 @@ class LotteryBot:
             with Session() as session:
                 user = session.query(User).filter_by(telegram_id=user_telegram_id).first()
                 if user:
+                    # Find and delete the specific reservation for this user, number, and tier
                     reservation_to_delete = session.query(ReservedNumber).filter_by(
                         user_id=user.id,
                         number=number_reserved,
@@ -861,6 +863,7 @@ class LotteryBot:
                         logging.info(f"No active reservation found for user {user_telegram_id} during cancellation (possibly expired or already processed).")
         
         await update.message.reply_text("❌ Purchase cancelled. You can start a new purchase with /buy.")
+        # Clear user_data for the conversation to ensure a clean slate
         context.user_data.clear() 
         return ConversationHandler.END
 
@@ -871,14 +874,18 @@ class LotteryBot:
 
 
 # --- Global instance of the bot for internal use (e.g., scheduled tasks) ---
+# This will be initialized only once when the `run` function is called by Gunicorn
 telegram_bot_instance: Optional[LotteryBot] = None
 
 # --- Main Application Start Point for Gunicorn ---
-def run(environ, start_response):
+# This function will be called by Gunicorn to start the WSGI application (Flask)
+# and also launch the Telegram bot in a background thread.
+def run(environ, start_response): # This function takes the standard WSGI arguments
     """
     Initializes the database, starts the Telegram bot in a background thread,
     and returns the Flask application for Gunicorn to serve.
     """
+    # Configure logging for the Gunicorn process
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO
@@ -886,15 +893,20 @@ def run(environ, start_response):
     
     logging.info("Starting Lottery Bot application...")
 
+    # Initialize database
     try:
         init_db()
     except Exception as e:
         logging.critical(f"Failed to initialize database during startup: {e}")
         pass 
     
+    # Start Telegram bot in a separate thread
     global telegram_bot_instance
-    if telegram_bot_instance is None:
+    if telegram_bot_instance is None: # Ensure bot is only initialized once per Gunicorn worker
         telegram_bot_instance = LotteryBot()
+        
+        # Initialize and start APScheduler tasks in the main thread (Gunicorn's thread)
+        # This resolves the event loop issue by separating the scheduler from the bot's async loop.
         telegram_bot_instance.init_schedulers()
 
         def start_bot_async_loop():
@@ -902,17 +914,21 @@ def run(environ, start_response):
             asyncio.set_event_loop(bot_loop)
             bot_loop.run_until_complete(telegram_bot_instance.run_polling_bot())
 
-        bot_thread = Thread(target=start_bot_async_loop, daemon=True)
+        bot_thread = Thread(target=start_bot_async_loop, daemon=True) # daemon=True allows thread to exit with main app
         bot_thread.start()
         
         logging.info("Telegram bot background thread started.")
     else:
         logging.info("Telegram bot already initialized for this worker.")
     
+    # Gunicorn expects a WSGI callable, which is Flask's `app` instance.
+    # We pass the arguments received by `run` directly to Flask's `app`.
     return app(environ, start_response)
 
 
 # --- Local Development/Testing Entry Point ---
+# This block is only executed when you run the script directly (e.g., `python main.py`).
+# It provides a way to run both Flask and the bot locally without Gunicorn.
 if __name__ == '__main__':
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -927,11 +943,14 @@ if __name__ == '__main__':
         logging.critical(f"Failed to initialize database: {e}")
         exit(1)
         
+    # Start Flask health check server in a separate thread for local development
     flask_thread = Thread(target=lambda: app.run(host='0.0.0.0', port=5000))
     flask_thread.start()
     logging.info("Flask health check running on port 5000 (local dev mode)")
     
+    # Local bot instance
     local_bot_instance = LotteryBot()
+    # Initialize and start APScheduler for local dev instance
     local_bot_instance.init_schedulers()
 
     async def start_local_bot_async():
@@ -941,5 +960,6 @@ if __name__ == '__main__':
     bot_thread.start()
     logging.info("Telegram bot polling started in background (local dev mode)")
     
+    # Keep the main thread alive for Flask in local dev.
     flask_thread.join()
     bot_thread.join()
