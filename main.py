@@ -1,6 +1,6 @@
 import os
 import logging
-import asyncio
+import asyncio # Import asyncio
 import random
 from threading import Thread
 from datetime import datetime, timedelta
@@ -28,7 +28,6 @@ from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from sqlalchemy.sql import func
 
 # --- Configure Logging Early ---
-# Ensure logging is set up before any other parts of the application try to log
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -211,9 +210,9 @@ def clean_expired_reservations():
 
 
 # --- Flask Application ---
-run = Flask(__name__) # Renamed app to run for Gunicorn
+run = Flask(__name__)
 
-@run.route('/') # New root endpoint
+@run.route('/')
 def home():
     """A simple home page for the Flask application."""
     return "Lottery Bot Service is running. Use the Telegram bot to interact!"
@@ -335,10 +334,16 @@ class LotteryBot:
     def start_polling_in_background(self):
         """Starts the Telegram bot polling in a non-blocking way."""
         logging.info("Starting Telegram Bot polling in a background thread...")
+        # Create a new event loop for this thread and set it as the current one
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+            # Run the polling within the newly created event loop
+            loop.run_until_complete(self.application.run_polling(allowed_updates=Update.ALL_TYPES))
         except Exception as e:
             logging.critical(f"Telegram bot polling failed: {e}", exc_info=True)
+        finally:
+            loop.close() # Close the loop when done
 
 
     # ============= ADMIN COMMANDS =============
@@ -1337,16 +1342,14 @@ def initialize_application_components():
     LotteryBot.init_schedulers_standalone() # Starts APScheduler in a new thread
 
     # Initialize and start the Telegram bot in a background thread
-    # This must happen outside if __name__ == '__main__': for Gunicorn deployments
     try:
         lottery_bot_instance = LotteryBot()
         bot_thread = Thread(target=lottery_bot_instance.start_polling_in_background)
         bot_thread.daemon = True # Daemon threads exit when the main program exits
         bot_thread.start()
-        logging.info("Telegram Bot polling started in a background thread.")
+        logging.info("Telegram Bot polling thread initiated.") # Changed message
     except Exception as e:
         logging.critical(f"Failed to start Telegram Bot: {e}", exc_info=True)
-        # Re-raise to prevent the web service from starting if the bot critical fails
         raise
 
     _initialization_done = True
@@ -1357,12 +1360,5 @@ def initialize_application_components():
 initialize_application_components()
 
 if __name__ == '__main__':
-    # This block only runs when script is executed directly (e.g., `python main.py`)
-    # In a Gunicorn environment, the 'run' (Flask app) object itself is served.
-    # The script will effectively stay alive due to the background bot thread started above.
     logging.info("Running main.py directly for development/testing.")
     logging.info("Flask application 'run' is ready to be served by Gunicorn if deployed.")
-    # For local development, you might want to run Flask's dev server if no Gunicorn is used.
-    # For this setup, simply having the bot thread running is usually sufficient to keep it alive.
-    # If you need to run the Flask dev server locally, you'd add: run.run(debug=True)
-    # However, for deployment, Gunicorn handles it.
