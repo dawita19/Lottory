@@ -29,7 +29,7 @@ from sqlalchemy.sql import func
 
 # --- Configure Logging ---
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(name)s - %(levelname)% - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
@@ -37,11 +37,13 @@ logger = logging.getLogger(__name__)
 # --- Configuration & Environment Variables ---
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./lottery_bot.db")
 
-# IMPORTANT: These should ideally be set as environment variables on Render.
-# For direct code provision, they are placed here.
-BOT_TOKEN = "7355412379:AAGwYmpX8xpZm6eGHDykvByA_cYDQFOAJF4"
-ADMIN_IDS = [5795267718]
-CHANNEL_ID = -1002585009335
+# !!! IMPORTANT CHANGE: Using os.getenv to fetch credentials from Render environment variables !!!
+# These values will be supplied by your Render secrets group 'lottery-bot-secrets'.
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# ADMIN_IDS from env will be a string, convert to list of integers
+ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(',') if x.strip()]
+# CHANNEL_ID from env will be a string, convert to integer
+CHANNEL_ID = int(os.getenv("CHANNEL_ID")) if os.getenv("CHANNEL_ID") else None
 
 BACKUP_DIR = os.getenv("BACKUP_DIR", "./backups")
 MAINTENANCE = os.getenv("MAINTENANCE_MODE", "false").lower() == "true"
@@ -74,7 +76,7 @@ class User(Base):
         if not self.invite_code:
             self.invite_code = secrets.token_urlsafe(8)
 
-@event.listens_for(User, 'before_insert')
+@event.listen_for(User, 'before_insert')
 def receive_before_insert(mapper, connection, target):
     target.generate_invite_code()
 
@@ -222,6 +224,7 @@ class LotteryBot:
         if not BOT_TOKEN:
             logger.critical("BOT_TOKEN is not set. Bot cannot start.")
             raise ValueError("BOT_TOKEN required")
+        # Ensure ADMIN_IDS is a list and not empty after parsing
         if not ADMIN_IDS:
             logger.warning("ADMIN_IDS is not set or empty. Admin commands will be disabled.")
         if CHANNEL_ID is None:
