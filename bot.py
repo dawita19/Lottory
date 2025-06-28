@@ -3,7 +3,7 @@ import os
 import logging
 import asyncio
 import random
-import secrets # For generating invite codes
+import secrets
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Set, Tuple
 
@@ -35,29 +35,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- Configuration & Environment Variables ---
+# Using os.getenv is best practice for production, but explicitly setting here for clarity
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./lottery_bot.db")
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
-ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "")
-ADMIN_IDS = []
-if ADMIN_IDS_STR:
-    try:
-        ADMIN_IDS = [int(id_str.strip()) for id_str in ADMIN_IDS_STR.split(',') if id_str.strip()]
-    except ValueError:
-        logger.critical("ADMIN_IDS environment variable contains non-integer values. Admin commands may not work.")
-
-CHANNEL_ID_STR = os.environ.get("CHANNEL_ID")
-CHANNEL_ID = None
-if CHANNEL_ID_STR:
-    try:
-        CHANNEL_ID = int(CHANNEL_ID_STR)
-    except ValueError:
-        logger.critical("CHANNEL_ID environment variable is not a valid integer. Channel announcements may fail.")
+# Directly setting your provided values for the bot for this final code
+BOT_TOKEN = "7355412379:AAGwYmpX8xpZm6eGHDykvByA_cYDQFOAJF4" # YOUR BOT TOKEN
+ADMIN_IDS = [5795267718] # YOUR ADMIN TELEGRAM ID(s) as a list of integers
+CHANNEL_ID = -1002585009335 # YOUR CHANNEL ID
 
 BACKUP_DIR = os.getenv("BACKUP_DIR", "./backups")
-MAINTENANCE = os.getenv("MAINTENANCE_MODE", "false").lower() == "true"
+MAINTENANCE = os.getenv("MAINTENANCE_MODE", "false").lower() == "true" # Can be toggled by admin command
 
-ADMIN_CONTACT_HANDLE = os.getenv("ADMIN_CONTACT_HANDLE", "@your_telegram_admin_handle")
+ADMIN_CONTACT_HANDLE = os.getenv("ADMIN_CONTACT_HANDLE", "@lij_hailemichael") # Fallback, recommend setting via ENV if used
 
 # Conversation states
 SELECT_TIER, SELECT_NUMBER, PAYMENT_PROOF = range(3)
@@ -231,14 +220,14 @@ class LotteryBot:
 
     def _validate_config(self):
         if not BOT_TOKEN:
-            logger.critical("TELEGRAM_BOT_TOKEN environment variable is missing. Bot cannot start.")
-            raise ValueError("TELEGRAM_BOT_TOKEN environment variable required")
+            logger.critical("TELEGRAM_BOT_TOKEN is not set. Bot cannot start.")
+            raise ValueError("TELEGRAM_BOT_TOKEN required")
         if not ADMIN_IDS:
-            logger.warning("ADMIN_IDS environment variable is not set or empty. Admin commands will be disabled.")
+            logger.warning("ADMIN_IDS is not set or empty. Admin commands will be disabled.")
         if CHANNEL_ID is None:
-            logger.warning("CHANNEL_ID environment variable is not set or invalid. Channel announcements will be disabled.")
+            logger.warning("CHANNEL_ID is not set or invalid. Channel announcements will be disabled.")
         if not ADMIN_CONTACT_HANDLE:
-            logger.warning("ADMIN_CONTACT_HANDLE is not set. Defaulting to @your_telegram_admin_handle.")
+            logger.warning("ADMIN_CONTACT_HANDLE is not set. Defaulting to @lij_hailemichael.")
 
     @staticmethod
     def init_schedulers_standalone():
@@ -503,7 +492,7 @@ class LotteryBot:
                 f"🔗 Your unique invite link:\n<code>{invite_link}</code>\n\n"
                 "✨ <b>Reward System</b> ✨\n"
                 "🎁 Invite <b>10 active new users</b>: Get a FREE <b>200 Birr ticket</b>!\n"
-                "💰 Buy <b>10 tickets</b> yourself: Get a FREE <b>100 Birr ticket</b>!\n\n" # Updated text for 10 tickets
+                "💰 Buy <b>10 tickets</b> yourself: Get a FREE <b>100 Birr ticket</b>!\n\n"
                 "(An 'active' user is someone who purchases at least one approved paid ticket.)\n\n"
                 "Let the inviting begin!",
                 parse_mode='HTML'
