@@ -1,13 +1,12 @@
+# bot.py
 import os
 import logging
 import asyncio
 import random
 import secrets # For generating invite codes
-from threading import Thread
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Set, Tuple
 
-from flask import Flask, jsonify, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, error
 from telegram.ext import (
     ApplicationBuilder,
@@ -26,9 +25,9 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import create_engine, Column, Integer, BigInteger, String, ForeignKey, DateTime, Boolean, Float, event
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
-from sqlalchemy.sql import func # Important for the health check query
+from sqlalchemy.sql import func
 
-# --- Configure Logging Early ---
+# --- Configure Logging ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -38,6 +37,7 @@ logger = logging.getLogger(__name__)
 # --- Configuration & Environment Variables ---
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./lottery_bot.db")
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+
 ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "")
 ADMIN_IDS = []
 if ADMIN_IDS_STR:
@@ -57,7 +57,7 @@ if CHANNEL_ID_STR:
 BACKUP_DIR = os.getenv("BACKUP_DIR", "./backups")
 MAINTENANCE = os.getenv("MAINTENANCE_MODE", "false").lower() == "true"
 
-ADMIN_CONTACT_HANDLE = os.getenv("ADMIN_CONTACT_HANDLE", "@lij_hailemichael")
+ADMIN_CONTACT_HANDLE = os.getenv("ADMIN_CONTACT_HANDLE", "@your_telegram_admin_handle")
 
 # Conversation states
 SELECT_TIER, SELECT_NUMBER, PAYMENT_PROOF = range(3)
@@ -220,41 +220,7 @@ def clean_expired_reservations():
     except Exception as e:
         logger.error(f"Unexpected error during expired reservation cleanup: {e}")
 
-# --- Flask Web Application ---
-run = Flask(__name__)
-
-@run.route('/')
-def home():
-    """A simple home page for the Flask application."""
-    return "Lottery Bot Service is running. Use the Telegram bot to interact!"
-
-@run.route('/health')
-def health_check():
-    """
-    Health check endpoint for the Flask application.
-    Checks database connectivity and bot maintenance mode.
-    """
-    try:
-        with engine.connect() as connection:
-            connection.execute(func.now())
-        
-        status = "MAINTENANCE" if MAINTENANCE else "OK"
-        status_code = 503 if MAINTENANCE else 200
-        
-        return jsonify(
-            status=status,
-            database="connected",
-            maintenance_mode=MAINTENANCE
-        ), status_code
-    except Exception as e:
-        logger.error(f"Health check database error: {e}")
-        return jsonify(
-            status="ERROR",
-            database="disconnected",
-            error=str(e)
-        ), 500
-
-# --- Lottery Bot Implementation ---
+# --- Lottery Bot Implementation Class ---
 class LotteryBot:
     def __init__(self):
         self._validate_config()
@@ -272,7 +238,7 @@ class LotteryBot:
         if CHANNEL_ID is None:
             logger.warning("CHANNEL_ID environment variable is not set or invalid. Channel announcements will be disabled.")
         if not ADMIN_CONTACT_HANDLE:
-            logger.warning("ADMIN_CONTACT_HANDLE is not set. Defaulting to @lij_hailemichael.")
+            logger.warning("ADMIN_CONTACT_HANDLE is not set. Defaulting to @your_telegram_admin_handle.")
 
     @staticmethod
     def init_schedulers_standalone():
@@ -298,7 +264,8 @@ class LotteryBot:
 
     async def _check_maintenance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if MAINTENANCE and not self._is_admin(update.effective_user.id):
-            await update.message.reply_text("🔧 The bot is currently under maintenance. Please try again later.")
+            if update.message:
+                await update.message.reply_text("🔧 The bot is currently under maintenance. Please try again later.")
             return True
         return False
 
@@ -345,27 +312,12 @@ class LotteryBot:
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_unknown_message))
         self.application.add_handler(MessageHandler(filters.COMMAND, self._handle_unknown_command))
 
-    # This method is now a synchronous wrapper that launches an async task in a new thread
-    def start_polling_in_background(self):
-        logger.info("Starting Telegram Bot polling in a background thread...")
-
-        # Inner helper function to run async code in a new thread
-        def run_async_loop(application_instance):
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(application_instance.run_polling(allowed_updates=Update.ALL_TYPES))
-            except Exception as e:
-                logger.critical(f"Telegram bot polling in new thread failed: {e}", exc_info=True)
-            finally:
-                loop.close()
-                logger.info("Telegram bot polling loop in background thread closed.")
-
-        # Create and start the thread
-        bot_thread = Thread(target=run_async_loop, args=(self.application,))
-        bot_thread.daemon = True
-        bot_thread.start()
-        logger.info("Telegram Bot polling thread initiated and started.")
+    async def start_polling(self):
+        logger.info("Starting Telegram Bot polling in main asyncio loop...")
+        try:
+            await self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+        except Exception as e:
+            logger.critical(f"Telegram bot polling failed: {e}", exc_info=True)
 
 
     # ============= ADMIN COMMANDS =============
@@ -376,7 +328,7 @@ class LotteryBot:
             
         global MAINTENANCE
         MAINTENANCE = True
-        await update.message.reply_text("🛠 Maintenance mode ENABLED. Users will be informed.")
+        await update.message.reply_text("🛠 Maintenance mode ENABLED. Users will be informed that the bot is temporarily unavailable.")
 
     async def _disable_maintenance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_admin(update.effective_user.id):
@@ -385,7 +337,7 @@ class LotteryBot:
             
         global MAINTENANCE
         MAINTENANCE = False
-        await update.message.reply_text("✅ Maintenance mode DISABLED. Bot is fully operational.")
+        await update.message.reply_text("✅ Maintenance mode DISABLED. Bot is fully operational again.")
 
     async def _give_free_ticket_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_admin(update.effective_user.id):
@@ -394,7 +346,9 @@ class LotteryBot:
 
         args = context.args
         if len(args) < 2 or len(args) > 3:
-            await update.message.reply_text("Usage: /give_free_ticket <user_telegram_id> <tier> [number]")
+            await update.message.reply_text("Usage: /give_free_ticket <user_telegram_id> <tier> [number]\n"
+                                            "Example: /give_free_ticket 123456789 100 50 (gives ticket #50 in 100 Birr tier)\n"
+                                            "Example: /give_free_ticket 123456789 200 (gives a random ticket in 200 Birr tier)")
             return
 
         try:
@@ -412,17 +366,17 @@ class LotteryBot:
             try:
                 user = session.query(User).filter_by(telegram_id=target_user_id).first()
                 if not user:
-                    await update.message.reply_text(f"❌ User with Telegram ID {target_user_id} not found.")
+                    await update.message.reply_text(f"❌ User with Telegram ID {target_user_id} not found. Please ensure they have used /start first.")
                     return
 
                 available_numbers = self._get_available_numbers(ticket_tier)
                 if not available_numbers:
-                    await update.message.reply_text(f"❌ No numbers available for {ticket_tier} Birr tier to give a free ticket.")
+                    await update.message.reply_text(f"❌ No numbers currently available for the {ticket_tier} Birr tier to give a free ticket.")
                     return
 
                 if chosen_number:
                     if chosen_number not in available_numbers:
-                        await update.message.reply_text(f"❌ Number #{chosen_number} is not available for Tier {ticket_tier}.")
+                        await update.message.reply_text(f"❌ The specified number #{chosen_number} is not available for Tier {ticket_tier}. Please choose an available one.")
                         return
                     selected_number = chosen_number
                 else:
@@ -440,12 +394,12 @@ class LotteryBot:
                 session.commit()
 
                 await update.message.reply_text(
-                    f"✅ Free ticket #{selected_number} (Tier {ticket_tier} Birr) given to @{user.username or user.telegram_id}."
+                    f"✅ Free ticket #{selected_number} (Tier {ticket_tier} Birr) has been successfully given to @{user.username or user.telegram_id}."
                 )
                 try:
                     await context.bot.send_message(
                         chat_id=target_user_id,
-                        text=f"🎁 Congratulations! You've received a FREE ticket: #{selected_number} (Tier {ticket_tier} Birr)! Good luck in the draw!"
+                        text=f"🎁 Congratulations! You've received a FREE ticket: #{selected_number} (Tier {ticket_tier} Birr)! Check your tickets with /mytickets. Good luck in the draw!"
                     )
                 except TelegramError as e:
                     logger.error(f"Failed to notify user {target_user_id} about free ticket: {e}")
@@ -453,10 +407,10 @@ class LotteryBot:
             except SQLAlchemyError as e:
                 session.rollback()
                 logger.error(f"Database error giving free ticket: {e}")
-                await update.message.reply_text("❌ An error occurred while giving the free ticket.")
+                await update.message.reply_text("❌ An error occurred while processing the free ticket. Please check logs for details.")
             except Exception as e:
                 logger.error(f"Unexpected error giving free ticket: {e}")
-                await update.message.reply_text("❌ An unexpected error occurred.")
+                await update.message.reply_text("❌ An unexpected error occurred. Please check logs for details.")
 
 
     # ============= USER MANAGEMENT & INVITATION =============
@@ -479,9 +433,9 @@ class LotteryBot:
                         inviter = session.query(User).filter_by(invite_code=invite_code).first()
                         if inviter:
                             invited_by_user_id = inviter.id
-                            logger.info(f"New user {user_telegram_id} invited by {inviter.telegram_id}.")
+                            logger.info(f"New user {user_telegram_id} was invited by user {inviter.telegram_id}.")
                         else:
-                            logger.warning(f"Invalid invite code '{invite_code}' used by {user_telegram_id}.")
+                            logger.warning(f"Invalid invite code '{invite_code}' used by new user {user_telegram_id}.")
                     
                     user = User(
                         telegram_id=user_telegram_id,
@@ -490,31 +444,32 @@ class LotteryBot:
                     )
                     session.add(user)
                     session.commit()
-                    
+
                     welcome_message = (
-                        f"🎉 Welcome to Lottery Bot, {username}! 🎉\n\n"
-                        "Get ready to try your luck and win big!\n\n"
+                        f"🎉 Welcome to Lottery Bot, <b>{username}</b>! 🎉\n\n"
+                        "Get ready to try your luck and win big prizes!\n\n"
                         "Here's what you can do:\n"
-                        "🎟️ /buy - Get your lottery ticket.\n"
-                        "🔢 /numbers - See available numbers.\n"
-                        "🎫 /mytickets - View your purchased and reserved tickets.\n"
-                        "📈 /progress - Check current lottery progress.\n"
-                        "🏆 /winners - See past lucky winners.\n"
-                        "💌 /invite - Invite your friends and earn rewards!\n\n"
-                        "Good luck! May the numbers be ever in your favor!"
+                        "🎟️ /buy - Get your lottery ticket now!\n"
+                        "🔢 /numbers - See all currently available lottery numbers.\n"
+                        "🎫 /mytickets - Check your purchased and reserved tickets.\n"
+                        "📈 /progress - See how many tickets are sold for each tier.\n"
+                        "🏆 /winners - Browse our list of past lucky winners.\n"
+                        "💌 /invite - Invite your friends and earn fantastic rewards!\n\n"
+                        "Good luck! We hope you're our next big winner!"
                     )
-                    await update.message.reply_text(welcome_message)
+                    await update.message.reply_text(welcome_message, parse_mode='HTML')
                 else:
                     if not user.invite_code:
                         user.generate_invite_code()
                         session.add(user)
                         session.commit()
-                    await update.message.reply_text(f"👋 Welcome back, {username}! What would you like to do today?\n\nUse /help if you need a reminder of commands.")
+                    await update.message.reply_text(f"👋 Welcome back, <b>{username}</b>! What would you like to do today?\n\n"
+                                                    "If you need a reminder of commands, use /help.", parse_mode='HTML')
 
             except SQLAlchemyError as e:
                 session.rollback()
                 logger.error(f"Database error during /start for {user_telegram_id}: {e}")
-                await update.message.reply_text("❌ An error occurred while processing your request. Please try again.")
+                await update.message.reply_text("❌ An error occurred while setting up your account. Please try again or contact support.")
             except TelegramError as e:
                 logger.error(f"Telegram API error during /start for {user_telegram_id}: {e}")
 
@@ -524,7 +479,7 @@ class LotteryBot:
         with Session() as session:
             user = session.query(User).filter_by(telegram_id=user_telegram_id).first()
             if not user:
-                await update.message.reply_text("Please use /start first to register.")
+                await update.message.reply_text("Please use /start first to register and get your invite code.")
                 return
             
             if not user.invite_code:
@@ -532,15 +487,25 @@ class LotteryBot:
                 session.add(user)
                 session.commit()
 
-            bot_info = await context.bot.get_me()
-            bot_username = bot_info.username
+            try:
+                bot_info = await context.bot.get_me()
+                bot_username = bot_info.username
+            except TelegramError as e:
+                logger.error(f"Failed to get bot username for invite link: {e}")
+                await update.message.reply_text("❌ Could not generate invite link. Please try again later.")
+                return
+
             invite_link = f"https://t.me/{bot_username}?start={user.invite_code}"
 
             await update.message.reply_text(
-                f"💌 Share this link to invite your friends and earn rewards!\n\n"
-                f"Your unique invite link:\n<code>{invite_link}</code>\n\n"
-                "You will get a FREE 200 Birr ticket for every 10 *active* users you invite!\n"
-                "(An active user is someone who purchases at least one approved ticket.)",
+                f"💌 <b>Invite Your Friends & Earn Rewards!</b>\n\n"
+                f"Share your unique invite link below. When your friends join using this link and become active, you get rewards!\n\n"
+                f"🔗 Your unique invite link:\n<code>{invite_link}</code>\n\n"
+                "✨ <b>Reward System</b> ✨\n"
+                "🎁 Invite <b>10 active new users</b>: Get a FREE <b>200 Birr ticket</b>!\n"
+                "💰 Buy <b>10 tickets</b> yourself: Get a FREE <b>100 Birr ticket</b>!\n\n" # Updated text for 10 tickets
+                "(An 'active' user is someone who purchases at least one approved paid ticket.)\n\n"
+                "Let the inviting begin!",
                 parse_mode='HTML'
             )
 
@@ -613,7 +578,10 @@ class LotteryBot:
 
         logger.info(f"User {user.telegram_id} has {purchased_tickets_count} approved non-free tickets.")
 
-        eligible_rewards = purchased_tickets_count // 100
+        # --- THIS IS THE UPDATED LINE FOR THE 10 TICKET REWARD ---
+        eligible_rewards = purchased_tickets_count // 10 # Changed from 100 to 10
+        # --- END OF UPDATED LINE ---
+
         current_awarded_tickets = session.query(Ticket).filter(
             Ticket.user_id == user.id,
             Ticket.is_free_ticket == True,
@@ -649,7 +617,7 @@ class LotteryBot:
                 try:
                     await context.bot.send_message(
                         chat_id=user.telegram_id,
-                        text=f"🎉 Congratulations! You've bought 100 tickets and received a FREE 100 Birr ticket: #{chosen_number}! Check /mytickets to see your new ticket!"
+                        text=f"🎉 Congratulations! You've bought 10 tickets and received a FREE 100 Birr ticket: #{chosen_number}! Check /mytickets to see your new ticket!" # Updated text
                     )
                 except TelegramError as e:
                     logger.error(f"Failed to notify user {user.telegram_id} about bulk purchase reward: {e}")
@@ -1595,33 +1563,38 @@ class LotteryBot:
                 "Please use one of the valid commands from the menu or type /help for assistance."
             )
 
-# Global variable to hold the bot instance
+# --- Bot Initialization and Startup ---
 lottery_bot_instance: Optional[LotteryBot] = None
 
-# Global flag to ensure one-time initialization
 _initialization_done = False
 
-def initialize_application_components():
+async def main_bot_startup():
     global _initialization_done, lottery_bot_instance
     if _initialization_done:
+        logger.info("Bot components already initialized.")
         return
 
-    logger.info("Performing one-time application initialization...")
+    logger.info("Performing one-time bot application initialization...")
     
     init_db()
+    
     LotteryBot.init_schedulers_standalone()
 
     try:
         lottery_bot_instance = LotteryBot()
-        lottery_bot_instance.start_polling_in_background() 
+        await lottery_bot_instance.start_polling() 
     except Exception as e:
         logger.critical(f"Failed to initialize and start Telegram Bot: {e}", exc_info=True)
         raise
 
     _initialization_done = True
-    logger.info("Application components initialized.")
+    logger.info("Bot application components initialized and polling started.")
 
-
-# Call initialization function directly so it runs when Gunicorn imports main.py
-initialize_application_components()
+if __name__ == "__main__":
+    try:
+        asyncio.run(main_bot_startup())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by KeyboardInterrupt.")
+    except Exception as e:
+        logger.critical(f"Unhandled exception in main_bot_startup: {e}", exc_info=True)
 
