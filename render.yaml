@@ -1,40 +1,41 @@
-# render.yaml
-services:
-  - type: web
-    name: lottery-bot-web
-    env: python
-    buildCommand: "pip install -r requirements.txt"
-    # Points to the Flask app 'run' object inside 'web.py'
-    startCommand: "gunicorn --bind 0.0.0.0:$PORT --workers 1 web:run"
-    healthCheckPath: /health
-    envVars:
-      # Only provide environment variables relevant to the web service
-      - key: DATABASE_URL
-        fromGroup: lottery-bot-secrets # Essential for database health check
-      - key: MAINTENANCE_MODE
-        value: "false" # Initial state for health check response
-      - key: ADMIN_CONTACT_HANDLE
-        value: "@lij_hailemichael" # For admin contact in health check info
+    # render.yaml
+    services:
+      - type: web
+        name: lottery-bot-web
+        env: python
+        buildCommand: "pip install -r requirements.txt"
+        # Points to the Flask app 'run' object inside 'web.py'
+        startCommand: "gunicorn --bind 0.0.0.0:$PORT --workers 1 web:run"
+        healthCheckPath: /health
+        envVars:
+          # Only provide environment variables relevant to the web service
+          - key: DATABASE_URL
+            fromGroup: lottery-bot-secrets # Essential for database health check
+          - key: MAINTENANCE_MODE
+            value: "false" # Initial state for health check response
+          - key: ADMIN_CONTACT_HANDLE
+            value: "@lij_hailemichael" # For admin contact in health check info
 
-  - type: worker
-    name: lottery-bot-worker
-    env: python
-    buildCommand: "pip install -r requirements.txt"
-    # Runs bot.py directly as a separate worker process
-    startCommand: "python bot.py"
-    envVars:
-      # Provide all environment variables required by the bot
-      - key: DATABASE_URL
-        fromGroup: lottery-bot-secrets # Required for bot's database interactions
-      - key: TELEGRAM_BOT_TOKEN
-        fromGroup: lottery-bot-secrets # Required for the bot to authenticate with Telegram
-      - key: ADMIN_IDS
-        fromGroup: lottery-bot-secrets # Required for admin commands in the bot
-      - key: CHANNEL_ID
-        fromGroup: lottery-bot-secrets # Required for channel announcements in the bot
-      - key: MAINTENANCE_MODE
-        value: "false" # Initial state for bot behavior
-      - key: ADMIN_CONTACT_HANDLE
-        value: "@lij_hailemichael" # Your Telegram handle for prize claims
-      - key: BACKUP_DIR
-        value: "./backups" # Optional: where SQLite backups will be stored if using SQLite
+      - type: worker
+        name: lottery-bot-worker
+        env: python
+        buildCommand: "pip install -r requirements.txt"
+        # Runs bot.py directly as a separate worker process
+        startCommand: "python bot.py"
+        envVars:
+          # Provide all environment variables required by the bot
+          - key: DATABASE_URL
+            fromGroup: lottery-bot-secrets # Required for bot's database interactions
+          - key: TELEGRAM_BOT_TOKEN
+            fromGroup: lottery-bot-secrets # Required for the bot to authenticate with Telegram
+          - key: ADMIN_IDS
+            fromGroup: lottery-bot-secrets # Required for admin commands in the bot
+          - key: CHANNEL_ID
+            fromGroup: lottery-bot-secrets # Required for channel announcements in the bot
+          - key: MAINTENANCE_MODE
+            value: "false" # Initial state for bot behavior
+          - key: ADMIN_CONTACT_HANDLE
+            value: "@lij_hailemichael" # Your Telegram handle for prize claims
+          - key: BACKUP_DIR
+            value: "./backups" # Optional: where SQLite backups will be stored if using SQLite
+    
