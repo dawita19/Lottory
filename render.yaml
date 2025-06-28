@@ -1,39 +1,29 @@
 # render.yaml
 services:
   - type: web
-    name: lottery-bot-web
+    name: lottery-bot-main
     env: python
     buildCommand: "pip install -r requirements.txt"
-    # IMPORTANT CHANGE: Pointing to 'run' object in 'web.py'
-    startCommand: "gunicorn --bind 0.0.0.0:$PORT --workers 1 web:run"
+    # IMPORTANT CHANGE: Pointing to the 'run' Flask app object within Main.py
+    # and ensuring the script is executed.
+    startCommand: "gunicorn --bind 0.0.0.0:$PORT --workers 1 main:run"
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
-        fromGroup: lottery-bot-secrets # Essential for database health check
-      - key: MAINTENANCE_MODE
-        value: "false" # Initial state for health check response
-      - key: ADMIN_CONTACT_HANDLE
-        value: "@lij_hailemichael" # Your Telegram handle for prize claims, consistent with bot
-      # Removed TELEGRAM_BOT_TOKEN, ADMIN_IDS, CHANNEL_ID from web service as it doesn't need them.
-
-  - type: worker
-    name: lottery-bot-worker
-    env: python
-    buildCommand: "pip install -r requirements.txt"
-    # IMPORTANT CHANGE: Running bot.py directly
-    startCommand: "python bot.py"
-    envVars:
-      - key: DATABASE_URL
-        fromGroup: lottery-bot-secrets # Required for bot's database interactions
+        fromGroup: lottery-bot-secrets # Essential for database health check and bot DB operations
       - key: TELEGRAM_BOT_TOKEN
-        fromGroup: lottery-bot-secrets # Required for the bot to authenticate with Telegram
+        fromGroup: lottery-bot-secrets # Essential for the bot's operation
       - key: ADMIN_IDS
-        fromGroup: lottery-bot-secrets # Required for admin commands in the bot
+        fromGroup: lottery-bot-secrets # For admin commands
       - key: CHANNEL_ID
-        fromGroup: lottery-bot-secrets # Required for channel announcements in the bot
+        fromGroup: lottery-bot-secrets # For channel announcements
       - key: MAINTENANCE_MODE
-        value: "false" # Initial state for bot behavior, can be toggled via admin command
+        value: "false" # Initial state for bot behavior and health check
       - key: ADMIN_CONTACT_HANDLE
-        value: "@lij_hailemichael" # Your Telegram handle for prize claims, consistent with bot
+        value: "@lij_hailemichael" # Your Telegram handle for prize claims
       - key: BACKUP_DIR
-        value: "./backups" # Optional: where SQLite backups will be stored if using SQLite
+        value: "./backups" # Where SQLite backups will be stored if using SQLite (ensure this path is writable)
+
+# Note: We are no longer defining a separate 'worker' service
+# because the bot's polling logic is now integrated and run within the 'main.py'
+# file in a background thread of the web service.
